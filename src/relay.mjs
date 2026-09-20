@@ -161,6 +161,7 @@ export async function createRelay({
   const api = {
     ledger, approvals, profile, bridge, volatileKeys, agents,
     dispatch, agentInfo, waitForReconnect, checkpoint, startSession, endSession, runCommand,
+    httpError: (status, message) => new HttpError(status, message),
     getPolicy: () => currentPolicy,
     setPolicy: (p) => { currentPolicy = validatePolicy(p); return currentPolicy; },
     captureWorld: (agent) => captureWorld(bridge, agent),

@@ -16,6 +16,14 @@ export async function withBank(fn, relayOpts = {}, bankOpts = {}) {
   }
 }
 
+// Same, plus a second bank named "shadow" (a disposable copy of the app for forks / replays).
+export async function withBankPair(fn, relayOpts = {}) {
+  return withBank(async (ctx) => {
+    const shadow = await startFakeBank(ctx.relay.port, { name: 'shadow' });
+    try { return await fn({ ...ctx, shadow }); } finally { await shadow.close(); }
+  }, { policy: { default: 'allow' }, ...relayOpts });
+}
+
 export async function transferVia(client, to, amount, opts = {}) {
   await client.cmd('dom.fill', { selector: '#to', value: to }, opts);
   await client.cmd('dom.fill', { selector: '#amount', value: String(amount) }, opts);
