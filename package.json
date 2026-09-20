@@ -1,0 +1,16 @@
+{
+  "name": "witnessloop",
+  "version": "0.1.0",
+  "description": "Accountable autonomy for browser agents: hash-chained signed ledger, two-phase commit gate, forkable world checkpoints, causal replay.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=24" },
+  "bin": { "witnessloop": "src/cli.mjs" },
+  "scripts": {
+    "test": "node --test --test-force-exit test/",
+    "serve": "node src/cli.mjs serve",
+    "demo:bank": "node examples/agents/demo.mjs bank",
+    "demo:mailer": "node examples/agents/demo.mjs mailer",
+    "demo:todo": "node examples/agents/demo.mjs todo"
+  }
+}

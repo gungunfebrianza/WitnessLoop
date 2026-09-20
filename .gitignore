@@ -1,0 +1,7 @@
+node_modules/
+*.db
+*.db-shm
+*.db-wal
+.witnessloop/
+*.wl.json
+!examples/**/*.wl.json
