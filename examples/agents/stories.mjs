@@ -67,7 +67,7 @@ export const bank = {
     say(`2. Ledger chain verified: ${verified.ok} (${verified.checked} events, sealed through #${verified.sealedThrough}).`);
 
     const bisect = await client.bisect(sid);
-    say(`3. bisect: first bad event is #${bisect.firstBad.commandIdx} (${JSON.stringify(bisect.firstBad.command.params)}) - ${bisect.firstBad.why}; approved by ${bisect.firstBad.approvedBy}.`);
+    say(`3. bisect: first bad event is #${bisect.firstBad.commandIdx} (${JSON.stringify(bisect.firstBad.preview ?? bisect.firstBad.command.params)}) - ${bisect.firstBad.why}; approved by ${bisect.firstBad.approvedBy}.`);
 
     const prodWorld = await stage.world('default');
     const patched = readPolicy('bank-patched.json');

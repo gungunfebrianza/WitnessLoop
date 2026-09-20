@@ -43,12 +43,15 @@ export async function bisect({ ledger, sessionId, invariant, search = 'linear', 
   const verdict = await check(bad);
   const cmd = events.find((e) => e.idx === cp.afterIdx) ?? null;
   const decisions = cmd?.data?.intent_idx !== undefined ? events.filter((e) => e.kind === 'decision' && e.data.intent_idx === cmd.data.intent_idx) : [];
+  const intent = cmd?.data?.intent_idx !== undefined ? events.find((e) => e.idx === cmd.data.intent_idx) : null;
   const graph = buildCausal(events);
   result.found = true;
   result.firstBad = {
     checkpointIdx: cp.idx,
     commandIdx: cp.afterIdx,
     command: cmd ? { idx: cmd.idx, type: cmd.type, effect: cmd.effect, actor: cmd.actor, params: cmd.data.params, result: cmd.data.result } : null,
+    // what the page said was about to happen (irreversible actions only)
+    preview: intent?.data?.preview ?? null,
     approvedBy: decisions.length ? decisions.at(-1).data.by ?? 'policy' : null,
     why: verdict.why ?? 'invariant failed',
     stateDiff: bad > 0 ? diffWorld(comparable(cps[bad - 1].world, volatileKeys), comparable(cp.world, volatileKeys)) : [],
