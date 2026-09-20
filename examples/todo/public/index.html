@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Todo</title>
+<style>
+  body { font: 16px system-ui, sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
+  li { display: flex; gap: .5rem; align-items: center; padding: .3rem 0; border-bottom: 1px solid #eee; }
+  li.done .title { text-decoration: line-through; color: #888; } .title { flex: 1; }
+  input#new { font: inherit; padding: .3rem; width: 70%; } button { font: inherit; }
+</style>
+</head>
+<body>
+<h1>Todo</h1>
+<form id="add-form" onsubmit="return false"><input id="new" name="title" autocomplete="off"> <button id="add" type="button">Add</button></form>
+<ul id="list"></ul>
+<p id="count"></p>
+<script src="/witnessloop/inject.js"></script>
+<script>
+  // IndexedDB "todo-db" / store "todos" { id (max+1), title, done, created }
+  const open = () => new Promise((res, rej) => {
+    const r = indexedDB.open('todo-db', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('todos', { keyPath: 'id' });
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  const tx = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const t = db.transaction('todos', mode); const out = fn(t.objectStore('todos'));
+      t.oncomplete = () => { db.close(); res(out && out.result !== undefined ? out.result : out); }; t.onerror = () => rej(t.error);
+    });
+  };
+  const all = () => tx('readonly', (s) => s.getAll());
+  async function render() {
+    const items = await all();
+    document.getElementById('list').innerHTML = items.map((t) =>
+      `<li data-id="${t.id}" class="${t.done ? 'done' : ''}"><input type="checkbox" class="toggle" ${t.done ? 'checked' : ''}><span class="title">${t.title}</span><button class="del">x</button></li>`).join('');
+    document.getElementById('count').textContent = `${items.filter((t) => !t.done).length} open, ${items.filter((t) => t.done).length} done`;
+  }
+  document.getElementById('add').addEventListener('click', async () => {
+    const title = document.getElementById('new').value.trim();
+    if (!title) return;
+    // explicit ids (max+1), not autoIncrement: IndexedDB cannot rewind a key generator, so an
+    // autoIncrement store would hand a restored world different keys than the original run got
+    await tx('readwrite', (s) => { const k = s.getAllKeys(); k.onsuccess = () => s.add({ id: Math.max(0, ...k.result) + 1, title, done: false, created: Date.now() }); });
+    document.getElementById('new').value = '';
+    await render();
+  });
+  document.getElementById('list').addEventListener('click', async (ev) => {
+    const li = ev.target.closest('li'); if (!li) return;
+    const id = Number(li.dataset.id);
+    if (ev.target.classList.contains('del')) await tx('readwrite', (s) => s.delete(id));
+    else if (ev.target.classList.contains('toggle')) await tx('readwrite', (s) => { const g = s.get(id); g.onsuccess = () => { const t = g.result; t.done = !t.done; s.put(t); }; });
+    else return;
+    await render();
+  });
+  render();
+</script>
+</body>
+</html>

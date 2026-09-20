@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tiny Bank</title>
+<meta name="witness-adapter" content="1">
+<style>
+  body { font: 16px system-ui, sans-serif; max-width: 520px; margin: 2rem auto; padding: 0 1rem; color: #1b1f24; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  td { padding: .35rem .5rem; border-bottom: 1px solid #ddd; }
+  td.bal { text-align: right; font-variant-numeric: tabular-nums; }
+  label { display: block; margin: .5rem 0; }
+  input, select { font: inherit; padding: .3rem; width: 60%; }
+  button { font: inherit; padding: .5rem 1rem; }
+  #status { min-height: 1.5em; color: #0a5; } #status.err { color: #b00; }
+</style>
+</head>
+<body>
+<h1>Tiny Bank <small>signed in as alice</small></h1>
+<table id="balances"><tbody></tbody></table>
+<form id="transfer" onsubmit="return false">
+  <label>To
+    <select id="to" name="to"><option value="">-- choose --</option><option>bob</option><option>carol</option></select>
+  </label>
+  <label>Amount ($) <input id="amount" name="amount" inputmode="decimal" autocomplete="off"></label>
+  <label>Memo <input id="memo" name="memo" autocomplete="off"></label>
+  <!-- the page declares that this click cannot be undone, and which fields describe it -->
+  <button id="send" type="button" data-wl-effect="irreversible" data-wl-preview="#transfer">Send money</button>
+</form>
+<p id="status" role="status"></p>
+<script src="/witnessloop/inject.js"></script>
+<script>
+  const fmt = (c) => (c / 100).toFixed(2);
+  async function load() {
+    const s = await (await fetch('/api/state')).json();
+    const rows = Object.entries(s.balances).map(([n, c]) => `<tr data-account="${n}"><td class="name">${n}</td><td class="bal">${fmt(c)}</td></tr>`);
+    rows.push(`<tr data-account="fees"><td class="name">fees</td><td class="bal">${fmt(s.fees)}</td></tr>`);
+    document.querySelector('#balances tbody').innerHTML = rows.join('');
+  }
+  document.getElementById('send').addEventListener('click', async () => {
+    const status = document.getElementById('status');
+    const body = { to: to.value, amount: amount.value, memo: memo.value };
+    const res = await fetch('/api/transfer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await res.json();
+    status.className = r.ok ? '' : 'err';
+    status.textContent = r.ok ? `Sent $${fmt(r.tx.cents)} to ${r.tx.to} (fee $${fmt(r.tx.fee)})` : `Error: ${r.error}`;
+    if (r.ok) { to.value = ''; amount.value = ''; memo.value = ''; }
+    await load();
+  });
+  load();
+</script>
+</body>
+</html>

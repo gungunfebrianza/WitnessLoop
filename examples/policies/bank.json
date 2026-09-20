@@ -1,0 +1,9 @@
+{
+  "default": "require_approval",
+  "rules": [
+    { "when": { "effect": "irreversible", "preview.amount": { "lte": 150 }, "preview.to": { "in": ["bob", "carol"] } },
+      "then": "allow", "reason": "small payment to a known payee" },
+    { "when": { "effect": "irreversible", "preview.amount": { "gt": 5000 } },
+      "then": "deny", "reason": "above the hard limit" }
+  ]
+}

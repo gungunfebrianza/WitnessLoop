@@ -1,0 +1,7 @@
+{
+  "default": "require_approval",
+  "rules": [
+    { "when": { "effect": "irreversible", "preview.to": { "matches": "@acme\\.test$" } },
+      "then": "allow", "reason": "internal recipient" }
+  ]
+}

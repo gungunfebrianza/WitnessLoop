@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Outbox Mailer</title>
+<meta name="witness-adapter" content="1">
+<style>
+  body { font: 16px system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; color: #1b1f24; }
+  ul { list-style: none; padding: 0; } li { padding: .3rem 0; border-bottom: 1px solid #eee; }
+  label { display: block; margin: .5rem 0; } input, textarea { font: inherit; width: 100%; padding: .3rem; box-sizing: border-box; }
+  button { font: inherit; padding: .5rem 1rem; } #status { min-height: 1.5em; color: #0a5; } #status.err { color: #b00; }
+</style>
+</head>
+<body>
+<h1>Outbox Mailer</h1>
+<h2>Contacts</h2>
+<ul id="contacts"></ul>
+<h2>Compose</h2>
+<form id="compose" onsubmit="return false">
+  <label>To <input id="to" name="to" autocomplete="off"></label>
+  <label>Subject <input id="subject" name="subject" autocomplete="off"></label>
+  <label>Body <textarea id="body" name="body" rows="4"></textarea></label>
+  <!-- irreversible: the preview shows who it goes to and the subject, nothing else -->
+  <button id="send" type="button" data-wl-effect="irreversible" data-wl-preview="#compose">Send</button>
+</form>
+<p id="status" role="status"></p>
+<h2>Sent</h2>
+<ul id="sent"></ul>
+<script src="/witnessloop/inject.js"></script>
+<script>
+  async function load() {
+    const s = await (await fetch('/api/state')).json();
+    document.getElementById('contacts').innerHTML = s.contacts.map((c) => `<li data-email="${c.email}"><span class="name">${c.name}</span> <span class="email">${c.email}</span></li>`).join('');
+    document.getElementById('sent').innerHTML = s.outbox.map((m) => `<li data-id="${m.id}">to ${m.to.join(', ')} - ${m.subject}</li>`).join('');
+  }
+  document.getElementById('send').addEventListener('click', async () => {
+    const status = document.getElementById('status');
+    const res = await fetch('/api/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ to: to.value, subject: subject.value, body: body.value }) });
+    const r = await res.json();
+    status.className = r.ok ? '' : 'err';
+    status.textContent = r.ok ? `Sent to ${r.msg.to.join(', ')}` : `Error: ${r.error}`;
+    if (r.ok) { to.value = ''; subject.value = ''; body.value = ''; }
+    await load();
+  });
+  load();
+</script>
+</body>
+</html>
