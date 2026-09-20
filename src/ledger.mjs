@@ -34,6 +34,12 @@ export function verifySession({ events, blobs = {}, seals = [], strict = false, 
       const b = blobs[e.data_hash];
       if (b === undefined) fail(i, 'payload blob missing');
       else if (sha256(b) !== e.data_hash) fail(i, 'payload blob does not match its hash');
+      else if (e.kind === 'checkpoint') {
+        // a checkpoint commits to a whole world snapshot by hash; it must travel with the bundle
+        const wh = JSON.parse(b).world_hash;
+        if (wh && blobs[wh] === undefined) fail(i, 'world snapshot blob missing');
+        else if (wh && sha256(blobs[wh]) !== wh) fail(i, 'world snapshot does not match its hash');
+      }
     }
     prev = e.hash;
   });
@@ -193,7 +199,15 @@ export class Ledger {
   bundle(sessionId) {
     const events = this.events(sessionId).map(({ seq, ...rest }) => rest);
     const blobs = {};
-    for (const e of events) if (e.data_hash) blobs[e.data_hash] = this.db.prepare('SELECT json FROM blobs WHERE hash = ?').get(e.data_hash).json;
+    const rawBlob = (h) => this.db.prepare('SELECT json FROM blobs WHERE hash = ?').get(h)?.json;
+    for (const e of events) {
+      if (!e.data_hash) continue;
+      blobs[e.data_hash] = rawBlob(e.data_hash);
+      if (e.kind === 'checkpoint' && blobs[e.data_hash]) {
+        const wh = JSON.parse(blobs[e.data_hash]).world_hash;
+        if (wh) blobs[wh] = rawBlob(wh);
+      }
+    }
     return { format: BUNDLE_FORMAT, exportedAt: this.now(), session: this.getSession(sessionId), events, blobs, seals: this.seals(sessionId) };
   }
 
