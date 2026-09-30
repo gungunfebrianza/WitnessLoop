@@ -82,7 +82,7 @@ test('the WebSocket agent link needs the token: no token or a wrong one never re
     }
     // raw handshake: the relay answers 401 rather than upgrading
     const status = await new Promise((resolve, reject) => {
-      const s = net.connect(relay.port, '127.0.0.1', () => s.write('GET /agent?name=default HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n'));
+      const s = net.connect(relay.port, '127.0.0.1', () => s.write('GET /agent?name=default HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n'));
       let buf = '';
       s.on('data', (d) => { buf += d; if (buf.includes('\r\n')) { s.destroy(); resolve(buf.split('\r\n')[0]); } });
       s.on('error', reject);
@@ -173,4 +173,21 @@ test('token file: restricted to the current user; on Windows icacls is invoked a
     writeTokenFile(p, 'new');
     assert.equal(fs.statSync(p).mode & 0o777, 0o600, 'an existing file is tightened too');
   }
+});
+
+test('DNS rebinding and cross-origin pages: a non-loopback Host is refused everywhere, and a foreign Origin is refused even with the right token', async () => {
+  await withBank(async ({ relay }) => {
+    const raw = (headers, p = '/health') => new Promise((resolve, reject) => {
+      const s = net.connect(relay.port, '127.0.0.1', () => s.write(`GET ${p} HTTP/1.1\r\n${Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\r\n')}\r\nConnection: close\r\n\r\n`));
+      let buf = ''; s.on('data', (d) => { buf += d; }); s.on('close', () => resolve(buf)); s.on('error', () => resolve(buf)); s.setTimeout(3000, () => s.destroy());
+    });
+    const auth = { authorization: `Bearer ${relay.token}` };
+    assert.match(await raw({ host: 'evil.example', ...auth }), /^HTTP\/1.1 421/, 'a rebound hostname with the right token');
+    assert.match(await raw({ host: 'evil.example' }, '/dashboard'), /^HTTP\/1.1 421/, 'the dashboard page too');
+    assert.match(await raw({ host: `127.0.0.1:${relay.port}`, origin: 'http://evil.example', ...auth }), /^HTTP\/1.1 403/, 'a foreign page with a stolen token');
+    assert.match(await raw({ host: `127.0.0.1:${relay.port}`, ...auth }), /^HTTP\/1.1 200/, 'no Origin (CLI, MCP): fine');
+    assert.match(await raw({ host: `localhost:${relay.port}`, origin: `http://localhost:${relay.port}`, ...auth }), /^HTTP\/1.1 200/, 'the dashboard itself: same origin');
+    const ws = await raw({ host: 'evil.example', upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' }, `/agent?token=${relay.token}`);
+    assert.ok(!/101/.test(ws), 'the agent link is not upgraded for a foreign Host');
+  });
 });

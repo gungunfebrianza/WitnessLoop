@@ -94,6 +94,18 @@ test('the example pages: the shop lists Pay; the bank (annotated) and the mailer
   assert.deepEqual(mailer.candidates, [], JSON.stringify(mailer.candidates));
 });
 
+// a one-shot http.request fetch: no pooled sockets, so nothing is still closing when the runner force-exits
+// (undici's keep-alive pool racing --test-force-exit aborts libuv on Windows)
+const plainFetch = (url, init = {}) => new Promise((resolve, reject) => {
+  const req = http.request(url, { method: init.method ?? 'GET', agent: false, headers: { connection: 'close' } }, (res) => {
+    const chunks = [];
+    res.on('data', (c) => chunks.push(c));
+    res.on('end', () => resolve(new Response([204, 304].includes(res.statusCode) ? null : Buffer.concat(chunks), { status: res.statusCode, headers: res.headers })));
+  });
+  req.on('error', reject);
+  req.end();
+});
+
 test('URL targets: a local page is fetched with GET; other hosts and redirects are refused; a missing file or page fails loudly', async () => {
   const seen = [];
   const server = http.createServer((req, res) => {
@@ -106,11 +118,11 @@ test('URL targets: a local page is fetched with GET; other hosts and redirects a
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    const r = await lintTarget(`${base}/page`);
+    const r = await lintTarget(`${base}/page`, { fetchImpl: plainFetch });
     assert.deepEqual(r.candidates.map((c) => c.kind), ['form']);
     assert.deepEqual(seen, ['GET /page'], 'one GET, nothing else');
-    await assert.rejects(lintTarget(`${base}/redir`), /redirects/);
-    await assert.rejects(lintTarget(`${base}/gone`), /404/);
+    await assert.rejects(lintTarget(`${base}/redir`, { fetchImpl: plainFetch }), /redirects/);
+    await assert.rejects(lintTarget(`${base}/gone`, { fetchImpl: plainFetch }), /404/);
     let called = false;
     const spy = async () => { called = true; return new Response('<button>Pay</button>'); };
     await assert.rejects(lintTarget('http://example.com/', { env: {}, fetchImpl: spy }), /only fetches loopback/);

@@ -23,6 +23,11 @@ const DASHBOARD_HTML = path.join(path.dirname(fileURLToPath(import.meta.url)), '
 // stuff arbitrary data (or credentials it chose to include) into the ledger through this channel.
 const clip = (v) => (typeof v === 'string' ? v.slice(0, 200) : null);
 export const cleanEffects = (list) => (Array.isArray(list) ? list.slice(0, 50).filter((x) => x && typeof x === 'object').map((x) => ({ method: clip(x.method)?.toUpperCase() ?? null, origin: clip(x.origin), path: clip(x.path), body_hash: clip(x.body_hash) })) : []);
+// DNS rebinding: a hostile page can point its own hostname at 127.0.0.1 and then talk to the relay as "same origin".
+// Its requests still carry ITS hostname in Host, so only loopback names are served; a browser also states the page's
+// Origin on cross-origin and POST requests, and for HTTP that must be this relay itself (the dashboard). CLI/MCP send neither.
+export const hostAllowed = (host) => /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host ?? '');
+export const originAllowed = (origin, host) => origin === undefined || origin === `http://${host}`;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export class HttpError extends Error {
@@ -31,7 +36,7 @@ export class HttpError extends Error {
 
 export async function createRelay({
   dbPath = ':memory:', keyPath = null, port = DEFAULT_PORT, host = '127.0.0.1', policy = null, profile = {},
-  approvalTimeoutMs = 300000, checkpoints = 'mutating', now, anchorSink = null, approvers = [], allowUnsignedApprovals = false, token = newToken(),
+  approvalTimeoutMs = 300000, checkpoints = 'mutating', now, anchorSink = null, anchorFile = null, approvers = [], allowUnsignedApprovals = false, token = newToken(),
 } = {}) {
   if (!token) throw new Error('createRelay needs a token: an unauthenticated relay is not an option');
   const key = keyPath ? loadOrCreateKey(keyPath) : generateKey();
@@ -190,7 +195,7 @@ export async function createRelay({
   }
 
   const api = {
-    ledger, approvals, profile, bridge, volatileKeys, agents, token,
+    ledger, approvals, profile, bridge, volatileKeys, agents, token, anchorFile,
     dispatch, agentInfo, waitForReconnect, checkpoint, startSession, endSession, runCommand,
     httpError: (status, message) => new HttpError(status, message),
     getPolicy: () => currentPolicy,
@@ -309,6 +314,7 @@ export async function createRelay({
       res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text) });
       res.end(text);
     };
+    if (!hostAllowed(req.headers.host)) { res.writeHead(421, { 'content-type': 'text/plain' }); res.end('witnessloop serves loopback hosts only'); return; }
     if (req.method === 'GET' && (url.pathname === '/dashboard' || url.pathname === '/dashboard/')) {
       const html = fs.readFileSync(DASHBOARD_HTML);
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': html.length, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" });
@@ -317,6 +323,7 @@ export async function createRelay({
     }
     try {
       // every route, including /health, needs the token; only the static dashboard page above is open (it carries no data)
+      if (!originAllowed(req.headers.origin, req.headers.host)) throw new HttpError(403, `cross-origin request refused (Origin ${req.headers.origin})`);
       if (!tokenMatches(token, bearerOf(req.headers.authorization))) throw new HttpError(401, 'missing or invalid relay token (Authorization: Bearer <token>)');
       const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
       if (!r) throw new HttpError(404, `no route ${req.method} ${url.pathname}`);
@@ -331,7 +338,7 @@ export async function createRelay({
 
   server.on('upgrade', (req, socket) => {
     const url = new URL(req.url, 'http://x');
-    if (url.pathname !== '/agent') { socket.destroy(); return; }
+    if (url.pathname !== '/agent' || !hostAllowed(req.headers.host)) { socket.destroy(); return; }
     // a browser WebSocket cannot set headers, so the agent presents the token in the query string; checked before the
     // handshake completes, so an unauthenticated socket never registers and never replaces a connected agent
     if (!tokenMatches(token, url.searchParams.get('token'))) { socket.end('HTTP/1.1 401 Unauthorized\r\nconnection: close\r\n\r\n'); return; }

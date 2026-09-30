@@ -53,7 +53,7 @@ async function serve(a) {
     dbPath: a.db ?? path.join(dir, 'ledger.db'), keyPath: a.key ?? path.join(dir, 'key.json'), port,
     policy: a.policy ? JSON.parse(fs.readFileSync(a.policy, 'utf8')) : null, profile,
     checkpoints: a.checkpoints ?? 'mutating', approvalTimeoutMs: a.approvalTimeoutMs ? Number(a.approvalTimeoutMs) : 300000,
-    anchorSink: a.anchorSink ? fileSink(a.anchorSink) : null,
+    anchorSink: a.anchorSink ? fileSink(a.anchorSink) : null, anchorFile: a.anchorSink ?? null,
     approvers: a.approver ?? [], allowUnsignedApprovals: !!a.allowUnsignedApprovals,
   });
   for (const w of lintPolicy(relay.getPolicy())) console.warn(`policy warning: ${w.message}`);

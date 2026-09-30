@@ -117,3 +117,32 @@ test('CLI: verify-bundle --anchor fails for a forged bundle and passes for the r
   assert.equal(run(bad, '--anchor', anchors).status, 1);
   assert.notEqual(run(good, '--anchor', path.join(d, 'nope.jsonl')).status, 0, 'missing anchor file is an error');
 });
+
+test('dashboard integrity shows anchor status from the real verifier: none, unanchored (fails closed), ok, and failed after a rewrite', async () => {
+  const { withBank, transferVia } = await import('./helpers/relay.mjs');
+  const { fileSink } = await import('../src/anchor.mjs');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wl-dashanchor-')), 'anchors.jsonl');
+  const detail = (relay, sid) => fetch(`http://127.0.0.1:${relay.port}/dashboard/sessions/${sid}`, { headers: { authorization: `Bearer ${relay.token}` } }).then((r) => r.json()).then((j) => j.result.summary.integrity.anchor);
+  await withBank(async ({ relay, client }) => {
+    const sid = await client.startSession({});
+    await transferVia(client, 'bob', 50);
+    await client.endSession(sid);
+    assert.equal((await detail(relay, sid)).state, 'unanchored', 'an anchor file with nothing for this session is not a pass');
+    const r = await client.anchor(sid);
+    await fileSink(file)({ session: r.session, head_hash: r.head_hash, seal: r.seal });
+    assert.equal((await detail(relay, sid)).state, 'ok');
+    // a rewritten history no longer matches the anchor
+    fs.writeFileSync(file, JSON.stringify({ session: sid, head_idx: r.head_idx, head_hash: '0'.repeat(64), ts: 'x' }) + '\n');
+    const bad = await detail(relay, sid);
+    assert.equal(bad.state, 'failed');
+    fs.writeFileSync(file, 'not json\n');
+    assert.equal((await detail(relay, sid)).state, 'failed', 'an unreadable anchor file fails closed');
+  }, { anchorFile: file });
+  await withBank(async ({ relay, client }) => {
+    const sid = await client.startSession({});
+    assert.equal((await detail(relay, sid)).state, 'none');
+  });
+});

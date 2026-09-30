@@ -36,8 +36,10 @@ and shown to follow from recorded causes"). This page says exactly how far that 
    Rotation: trust follows valid certs from a pinned key, so pin the key you trusted *before* a rotation.
    A revocation only bites in chains that contain the `key.revoke` event (every session active at the
    time gets one); a thief with an old key can still rewrite a session that ended before the revocation,
-   and only an anchor detects that. The key-file loader still regenerates a key silently if the file is
-   corrupt; that path is not changed here. `rotate-key` and `revoke-key` are ordinary op-table actions,
+   and only an anchor detects that. A key file that exists but is corrupt or incomplete now stops the
+   start with an error and is left untouched (only a missing file creates a key; `test/keys.test.mjs`).
+   The dashboard shows anchor status per session when the relay was started with `--anchor-sink`
+   (`test/anchor.test.mjs`); an anchor file on the same machine still protects nothing against its holder. `rotate-key` and `revoke-key` are ordinary op-table actions,
    so they are available to anyone holding the relay token, MCP included.
 2. **Annotations are the page's word; undeclared effects are detected, not prevented.** The gate acts on
    `data-wl-effect`. An unannotated button that charges a card is still classified `reversible` and runs
@@ -76,8 +78,10 @@ and shown to follow from recorded causes"). This page says exactly how far that 
    self-declared `by` string. Relay authentication is a single shared bearer token: it identifies "a client
    that knows the token", not a person; it is written to `.witnessloop/token` (mode 0600, or icacls to the
    current user on Windows; `serve` refuses to start if that fails) and is readable by any process running as
-   that user. There is no `Origin`/`Host` check, so the token, not the bind address, is what stops another web
-   page or local process; the relay is still localhost-only and not TLS. The agent link takes the token as a
+   that user. The relay serves only loopback `Host` names (421 otherwise, defeating DNS rebinding) and refuses HTTP
+   requests whose `Origin` is not the relay itself (403, even with a valid token; `test/auth.test.mjs`).
+   The agent WebSocket is not Origin-checked, because the app page's origin is legitimately different: the
+   token guards it. The relay is still localhost-only and not TLS. The agent link takes the token as a
    query parameter and the in-page agent keeps it in `sessionStorage`, where any script on the app page can
    read it. The dashboard page itself is served without the token and carries no data; the token is passed in
    the URL fragment and cleared from the address bar after it is read.

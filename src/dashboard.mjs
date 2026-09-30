@@ -1,6 +1,8 @@
 // Read-only analytics for the dashboard. Everything here is derived from the ledger on request:
 // nothing is cached and no "verified" flag is stored, so the integrity view always runs the verifier.
+import fs from 'node:fs';
 import { canon } from './canon.mjs';
+import { readAnchors } from './anchor.mjs';
 import { verifyBundle } from './ledger.mjs';
 import { evaluate, validatePolicy } from './policy.mjs';
 import { buildCausal, ancestors } from './causal.mjs';
@@ -74,18 +76,31 @@ function repeats(events) {
 
 // Runs the real verifier. `unsealedTail` is the count of events after the last seal: the window
 // in which truncation would go undetected.
-export function integrity(ledger, sessionId) {
+// anchorFile: the relay's own anchor file, if it has one. Anchor status is computed by the real verifier, never stored:
+// 'none' = no anchor file configured, 'unanchored' = file has nothing for this session (fails closed), 'ok' / 'failed'.
+export function anchorStatus(ledger, sessionId, anchorFile, readAnchors) {
+  if (!anchorFile) return { state: 'none' };
+  if (!fs.existsSync(anchorFile)) return { state: 'unanchored', reason: 'nothing has been anchored yet (the anchor file does not exist)' };
+  let anchors;
+  try { anchors = readAnchors(anchorFile); } catch (e) { return { state: 'failed', reason: `anchor file unreadable: ${e.message}` }; }
+  const mine = anchors.filter((a) => a.session === sessionId);
+  if (!mine.length) return { state: 'unanchored', reason: 'the anchor file has no record for this session' };
+  const v = ledger.verifySessionId(sessionId, { strict: false, anchors });
+  return v.ok ? { state: 'ok', anchors: mine.length, latestHead: Math.max(...mine.map((a) => a.head_idx)) } : { state: 'failed', reason: v.problems[0]?.reason ?? 'anchor check failed' };
+}
+
+export function integrity(ledger, sessionId, anchor = { state: 'none' }) {
   const t0 = performance.now();
   const v = ledger.verifySessionId(sessionId, { strict: false });
   const strict = ledger.verifySessionId(sessionId, { strict: true });
   const verifyMs = performance.now() - t0;
   return {
     ok: v.ok, strictOk: strict.ok, checked: v.checked, badIdx: v.badIdx, problems: v.problems, warnings: v.warnings, ended: v.ended,
-    sealedThrough: v.sealedThrough, unsealedTail: v.checked - 1 - v.sealedThrough, signers: v.signers, verifyMs: +verifyMs.toFixed(2),
+    sealedThrough: v.sealedThrough, unsealedTail: v.checked - 1 - v.sealedThrough, signers: v.signers, verifyMs: +verifyMs.toFixed(2), anchor,
   };
 }
 
-export function summarize(ledger, session) {
+export function summarize(ledger, session, anchorFile = null) {
   const events = ledger.events(session.id, { hydrate: true });
   const kinds = {};
   const effects = {};
@@ -107,7 +122,7 @@ export function summarize(ledger, session) {
     irreversibleShare: cmds ? (effects.irreversible ?? 0) / cmds : 0,
     funnel: g.funnel, flags: kinds.flag ?? 0, repeatedIntents: repeats(events).length,
     cost: { commandMs, avgCommandMs: cmds ? +(commandMs / cmds).toFixed(2) : 0, eventBytes: bytes, checkpointBytes, bytesPerEvent: events.length ? Math.round(bytes / events.length) : 0 },
-    integrity: integrity(ledger, session.id),
+    integrity: integrity(ledger, session.id, anchorStatus(ledger, session.id, anchorFile, readAnchors)),
   };
 }
 
@@ -124,8 +139,8 @@ export function fleet(sessions) {
 }
 
 export function overview(api) {
-  const { ledger } = api;
-  const sessions = ledger.listSessions().map((s) => summarize(ledger, s));
+  const { ledger, anchorFile } = api;
+  const sessions = ledger.listSessions().map((s) => summarize(ledger, s, anchorFile));
   // forks and replay-verify sessions re-execute a parent's intents on a shadow: counting them would double count
   const intents = ledger.listSessions().filter((s) => s.parent_session == null).flatMap((s) => ledger.events(s.id, { hydrate: true }).filter((e) => e.kind === 'intent').map((e) => ({ e, agent: s.agent })));
   const policy = api.getPolicy();
@@ -139,10 +154,10 @@ export function overview(api) {
 }
 
 export async function sessionDetail(api, sessionId) {
-  const { ledger, profile, volatileKeys } = api;
+  const { ledger, profile, volatileKeys, anchorFile } = api;
   const session = ledger.getSession(sessionId);
   const events = ledger.events(sessionId, { hydrate: true });
-  const summary = summarize(ledger, session);
+  const summary = summarize(ledger, session, anchorFile);
   const g = gateStats(events);
   const graph = buildCausal(events);
 

@@ -151,3 +151,23 @@ test('key lifecycle ops are in the shared op table, so the CLI and the MCP tool 
   const mcp = mcpOps().map((o) => o.name);
   for (const n of ['rotate-key', 'revoke-key', 'anchor']) assert.ok(mcp.includes(n), n);
 });
+
+test('a corrupt or incomplete key file stops the start instead of being silently replaced; only a missing file creates a key', async () => {
+  const { loadOrCreateKey } = await import('../src/attest.mjs');
+  const { createRelay } = await import('../src/relay.mjs');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wl-key-'));
+  const file = path.join(d, 'key.json');
+  const made = loadOrCreateKey(file);
+  assert.deepEqual(loadOrCreateKey(file), made, 'an existing good key is reused');
+  for (const bad of ['{not json', '{}', '{"publicKey":"x"}', '']) {
+    fs.writeFileSync(file, bad);
+    assert.throws(() => loadOrCreateKey(file), /refusing to replace|corrupt/, JSON.stringify(bad));
+    assert.equal(fs.readFileSync(file, 'utf8'), bad, 'the bad file is left untouched');
+    await assert.rejects(createRelay({ port: 0, keyPath: file }), /refusing to replace|corrupt/);
+  }
+  fs.rmSync(file);
+  assert.ok(loadOrCreateKey(file).publicKey, 'missing file: a new key is created');
+});

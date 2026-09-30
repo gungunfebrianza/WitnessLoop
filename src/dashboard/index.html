@@ -178,9 +178,10 @@ function vIntegrity(d) {
         ['sealed through', i.sealedThrough < 0 ? 'nothing' : 'event #' + i.sealedThrough],
         ['unsealed tail', i.unsealedTail + ' event(s)' + (i.unsealedTail ? ' — truncation of these would go undetected' : '')],
         ['session ended', i.ended ? 'yes' : 'no'],
-        ['signer fingerprint(s)', i.signers.join(', ') || 'none']]),
+        ['signer fingerprint(s)', i.signers.join(', ') || 'none'],
+        ['anchored outside the ledger', ({ none: 'no anchor file configured (serve --anchor-sink)', ok: 'yes: ' + (i.anchor && i.anchor.anchors) + ' anchor(s), latest head #' + (i.anchor && i.anchor.latestHead) + ' matches', unanchored: 'NO: ' + (i.anchor && i.anchor.reason), failed: 'FAILED: ' + (i.anchor && i.anchor.reason) })[i.anchor ? i.anchor.state : 'none']]]),
       i.problems.length ? table(['event', 'problem'], i.problems.map((p) => ['#' + p.idx, p.reason])) : null,
-      h('p', { class: 'note' }, 'Trust in the signer is not checked here: pin a key with verify --trusted-key. Seal hashes can be anchored outside the ledger (witnessloop anchor) and checked with verify --anchor, but this view does not check anchors, so it cannot by itself detect a full rewrite by the key holder.')),
+      h('p', { class: 'note' }, 'Trust in the signer is not checked here: pin a key with verify --trusted-key. Seal hashes can be anchored outside the ledger (witnessloop anchor) and checked with verify --anchor, the anchor row above is only as strong as the place the anchor file lives: a file on this machine protects nothing against whoever holds it.')),
     card('Tamper demonstration', h('p', { class: 'note' }, 'Damages an in-memory copy of this session\'s bundle and runs the real verifier on it. The stored ledger is never modified.'),
       h('p', null, h('button', { class: 'a', onclick: () => run('payload') }, 'Flip one payload byte'), ' ', h('button', { class: 'a', onclick: () => run('delete') }, 'Delete a middle event'), ' ', h('button', { class: 'a', onclick: () => run('truncate') }, 'Truncate the tail')), out));
   return box;

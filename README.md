@@ -57,7 +57,7 @@ node examples/agents/demo.mjs bank --hold   # keep everything running and open t
 - **Fleet**: chain verification across all sessions, agent comparison, policy rule hit map, recorded overhead.
 - **Per session**: chain health (sealed-through, unsealed tail, strict result) with a tamper demo run on a *copy* of the bundle; event timeline; decision funnel and approval latency; bisect with the invariant along the session and a state diff per checkpoint; causal graph (recorded solid, inferred dashed); fork/compare; policy what-if.
 - The dashboard page is open but its data calls need the relay token: `serve` opens it as `/dashboard#token=...` (the fragment is never sent to a server and is cleared after it is read). Open it by hand with the token from `.witnessloop/token`.
-- Every "verified" badge is computed by running the verifier on request, never read from a stored flag. Not built: anchor status in the dashboard (use `verify --anchor`), model/prompt metadata per agent, with/without-witnessloop latency (needs a benchmark run).
+- Every "verified" badge is computed by running the verifier on request, never read from a stored flag. Anchor status shows when serving with `--anchor-sink`. Not built: model/prompt metadata per agent, with/without-witnessloop latency (needs a benchmark run).
 
 ## Commands (CLI and MCP action names are the same table)
 

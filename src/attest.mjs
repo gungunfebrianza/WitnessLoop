@@ -15,10 +15,16 @@ export function generateKey() {
 }
 
 export function loadOrCreateKey(file) {
-  try {
-    const k = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (k.publicKey && k.privateKey) return k;
-  } catch { /* fall through and create */ }
+  // Only a file that does not exist is created. One that exists but cannot be read or parsed is an error: replacing it
+  // would silently orphan every seal it made and look like a normal start.
+  let raw = null;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw new Error(`cannot read key file ${file}: ${e.message}`); }
+  if (raw !== null) {
+    let k;
+    try { k = JSON.parse(raw); } catch (e) { throw new Error(`key file ${file} is corrupt (${e.message}); refusing to replace it. Restore it or move it aside on purpose`); }
+    if (!k.publicKey || !k.privateKey) throw new Error(`key file ${file} is missing publicKey/privateKey; refusing to replace it`);
+    return k;
+  }
   const k = generateKey();
   fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(k, null, 2), { mode: 0o600 });
