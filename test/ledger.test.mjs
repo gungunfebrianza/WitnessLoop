@@ -161,3 +161,26 @@ test('cannot end a session twice or append to a missing session', () => {
   assert.throws(() => l.endSession(sid), /already ended/);
   assert.throws(() => l.append(999, { kind: 'x' }), /no such session/);
 });
+
+test('verify pairs every command.begin with a result: warning normally, error under strict, and a paired begin is clean', () => {
+  const key = generateKey();
+  const l = new Ledger(':memory:', { key });
+  const sid = l.startSession({});
+  const b1 = l.append(sid, { kind: 'command.begin', type: 'dom.click', effect: 'irreversible', data: { params: {}, intent_idx: 1 } });
+  l.append(sid, { kind: 'command', type: 'dom.click', effect: 'irreversible', ok: true, data: { params: {}, begin_idx: b1.idx, result: {} } });
+  const b2 = l.append(sid, { kind: 'command.begin', type: 'dom.click', effect: 'irreversible', data: { params: {}, intent_idx: 3 } });
+  l.endSession(sid);
+  const soft = l.verifySessionId(sid, { strict: false });
+  assert.equal(soft.ok, true);
+  assert.deepEqual(soft.warnings.map((w) => w.idx), [b2.idx]);
+  const hard = l.verifySessionId(sid, { strict: true });
+  assert.equal(hard.ok, false);
+  assert.equal(hard.badIdx, b2.idx);
+  assert.equal(verifyBundle(l.bundle(sid)).ok, false, 'offline bundles are strict by default');
+  // a result that names a begin that never existed does not resolve anything else
+  const l2 = new Ledger(':memory:', { key });
+  const s2 = l2.startSession({});
+  const b = l2.append(s2, { kind: 'command.begin', type: 'dom.click', effect: 'irreversible', data: { params: {}, intent_idx: 1 } });
+  l2.append(s2, { kind: 'command', type: 'dom.click', ok: true, data: { params: {}, begin_idx: b.idx + 5, result: {} } });
+  assert.equal(l2.verifySessionId(s2, {}).warnings.length, 1);
+});

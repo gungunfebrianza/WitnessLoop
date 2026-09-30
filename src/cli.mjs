@@ -7,6 +7,9 @@ import { createClient } from './client.mjs';
 import { createRelay, DEFAULT_PORT } from './relay.mjs';
 import { loadOrCreateKey } from './attest.mjs';
 import { openUrl, shouldOpen } from './open.mjs';
+import { fileSink } from './anchor.mjs';
+import { lintPolicy } from './policy.mjs';
+import { writeTokenFile, DEFAULT_TOKEN_FILE } from './auth.mjs';
 
 const camel = (s) => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
@@ -50,12 +53,20 @@ async function serve(a) {
     dbPath: a.db ?? path.join(dir, 'ledger.db'), keyPath: a.key ?? path.join(dir, 'key.json'), port,
     policy: a.policy ? JSON.parse(fs.readFileSync(a.policy, 'utf8')) : null, profile,
     checkpoints: a.checkpoints ?? 'mutating', approvalTimeoutMs: a.approvalTimeoutMs ? Number(a.approvalTimeoutMs) : 300000,
+    anchorSink: a.anchorSink ? fileSink(a.anchorSink) : null,
+    approvers: a.approver ?? [], allowUnsignedApprovals: !!a.allowUnsignedApprovals,
   });
+  for (const w of lintPolicy(relay.getPolicy())) console.warn(`policy warning: ${w.message}`);
+  // the token file is written before the relay accepts anything, and a failure to protect it stops the start
+  const tokenFile = process.env.WITNESSLOOP_TOKEN_FILE ?? DEFAULT_TOKEN_FILE;
+  try { writeTokenFile(tokenFile, relay.token); } catch (e) { await relay.close(); throw e; }
   await relay.listen();
   console.log(`witnessloop relay listening on http://127.0.0.1:${relay.port}  (db ${a.db ?? path.join(dir, 'ledger.db')})`);
   const dashboard = `http://127.0.0.1:${relay.port}/dashboard`;
-  console.log(`dashboard: ${dashboard}`);
-  if (shouldOpen({ noOpen: a.noOpen })) openUrl(dashboard);
+  console.log(`dashboard: ${dashboard}   (relay token in ${tokenFile}; clients read it from there or from WITNESSLOOP_TOKEN)`);
+  console.log(a.approver?.length ? `approvals: signed by ${a.approver.length} registered approver key(s)${a.allowUnsignedApprovals ? ' OR unsigned (--allow-unsigned-approvals)' : ' only'}` : a.allowUnsignedApprovals ? 'approvals: UNSIGNED approvals allowed (--allow-unsigned-approvals)' : 'approvals: no approver key registered, so every approval will be refused; create one with keygen --role approver and pass --approver <fingerprint>');
+  // the token rides in the URL fragment: it is never sent to a server, logged or put in a Referer; the page moves it into memory and clears it
+  if (shouldOpen({ noOpen: a.noOpen })) openUrl(`${dashboard}#token=${relay.token}`);
   process.on('SIGINT', async () => { await relay.close(); process.exit(0); });
 }
 
@@ -67,10 +78,13 @@ export async function main(argv) {
   const args = parseArgs(op, rest);
   if (op.name === 'serve') { await serve(args); return null; }
   if (op.name === 'keygen') {
-    const file = args.out ?? path.join('.witnessloop', 'key.json');
+    if (args.role && !['signer', 'approver'].includes(args.role)) throw new Error('keygen: --role must be signer or approver');
+    const approver = args.role === 'approver';
+    const file = args.out ?? path.join('.witnessloop', approver ? 'approver.json' : 'key.json');
     const k = loadOrCreateKey(file);
     const { fingerprint } = await import('./attest.mjs');
-    console.log(`key at ${file}, fingerprint ${fingerprint(k.publicKey)}`);
+    console.log(`${approver ? 'approver key' : 'key'} at ${file}, fingerprint ${fingerprint(k.publicKey)}`);
+    if (approver) console.log(`register it with the relay:  witnessloop serve --approver ${fingerprint(k.publicKey)}   (keep ${file} away from the agent process)`);
     return 0;
   }
   const out = await op.run(createClient(), args);

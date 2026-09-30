@@ -56,26 +56,35 @@ node examples/agents/demo.mjs bank --hold   # keep everything running and open t
 
 - **Fleet**: chain verification across all sessions, agent comparison, policy rule hit map, recorded overhead.
 - **Per session**: chain health (sealed-through, unsealed tail, strict result) with a tamper demo run on a *copy* of the bundle; event timeline; decision funnel and approval latency; bisect with the invariant along the session and a state diff per checkpoint; causal graph (recorded solid, inferred dashed); fork/compare; policy what-if.
-- Every "verified" badge is computed by running the verifier on request, never read from a stored flag. Not built: external anchor status (needs roadmap 1.2), model/prompt metadata per agent, shadowed-rule detection, with/without-witnessloop latency (needs a benchmark run).
+- The dashboard page is open but its data calls need the relay token: `serve` opens it as `/dashboard#token=...` (the fragment is never sent to a server and is cleared after it is read). Open it by hand with the token from `.witnessloop/token`.
+- Every "verified" badge is computed by running the verifier on request, never read from a stored flag. Not built: anchor status in the dashboard (use `verify --anchor`), model/prompt metadata per agent, with/without-witnessloop latency (needs a benchmark run).
 
 ## Commands (CLI and MCP action names are the same table)
 
 `session-start` `session-end` `cmd <type> [json]` `intents` `approve <id>` `deny <id>` `policy [file]`
 `checkpoint` `verify <session> [--strict]` `verify-bundle <file>` `export <session> --out f.wl.json`
 `causal` `bisect [--search linear|binary]` `fork --shadow <agent> [--at N] [--override idx.param=v] [--skip a,b] [--policy f]`
-`replay-verify --shadow <agent>` `compare a b` `report` `serve` `keygen`. Run `node src/cli.mjs --help`.
+`detect <session>` `lint-page <file|url>` `policy --dry-run <session> [file]`
+`replay-verify --shadow <agent>` `compare a b` `report` `serve` `keygen [--role approver]` `anchor <session> [--sink f]` `rotate-key` `revoke-key <fp>`.
+`verify` and `verify-bundle` also take `--anchor <file>`, `--trusted-key <fp>` and `--trusted-approver <fp>` (repeatable). Run `node src/cli.mjs --help`.
+
+**Access and approvals.** Every relay call carries a bearer token (`serve` writes `.witnessloop/token`; clients read it or `WITNESSLOOP_TOKEN`). Approvals are signed: `keygen --role approver`, start the relay with `serve --approver <fingerprint>`, then `approve <id> --key .witnessloop/approver.json`. Unsigned approvals are refused unless `serve --allow-unsigned-approvals`. `verify` warns about *unresolved dispatches* (a released irreversible click with no recorded result) and fails them under `--strict`.
+
+**Undeclared effects.** The gate trusts `data-wl-effect`; an unannotated Pay button is not stopped. What witnessloop does about it, all *after the fact or advisory*: a click that makes a non-GET request under a `reversible`/unannotated label is flagged live (`undeclared_effect`, with method, origin, path and a body hash, never the body); `detect` and the report find reversible clicks that moved app-server state; `lint-page` lists unannotated candidates. Try `node examples/agents/demo.mjs shop`. Details and what is still missed: THREAT-MODEL limitation 2.
+
+`policy --dry-run <session> [file|json]` prints what a policy would have decided for every recorded intent (changing nothing) with shadowed-rule and backtracking-regex warnings.
 
 Page commands: `ping page.info dom.query dom.describe dom.text dom.wait dom.click dom.fill page.reload`.
 There is deliberately **no `eval`**: an unbounded write cannot be classified, so it cannot be gated.
 
 ## What it does not claim (read [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md))
 
-- The signing key is local. Sealing gives tamper *evidence* against later edits, not against whoever holds the key; anchor seal hashes elsewhere if that matters.
-- The gate is only as good as the page's `data-wl-effect` annotations, and the relay has no authentication (localhost only; `approve --by` is self-declared).
+- The signing key is local. Sealing gives tamper *evidence* against later edits, not against whoever holds the key; `anchor` helps only if the sink is outside the key holder's control.
+- The gate is only as good as the page's `data-wl-effect` annotations. The relay token and approver keys are files readable by the same OS user; approver keys must be kept away from the agent.
 - Replay is scoped to a shadow environment and app-declared volatile fields. Causal `derived_from` edges are heuristics and labelled *inferred*.
 - IndexedDB cannot rewind `autoIncrement` key generators; use explicit ids in apps you want to replay exactly.
 
 ## Layout
 
-`src/` ledger, attest, gate, policy, world, causal, bisect, replay, relay, cli, mcp-server, agent/inject.js
-· `examples/` bank, mailer, todo (+ profiles, policies, scripted agents, stories) · `test/` · `docs/DESIGN.md`
+`src/` ledger, attest, gate, policy, effects, detect, lint, world, causal, bisect, replay, relay, cli, mcp-server, agent/inject.js
+· `examples/` bank, mailer, todo, shop (+ profiles, policies, scripted agents, stories) · `test/` · `docs/DESIGN.md`

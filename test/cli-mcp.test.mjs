@@ -49,7 +49,7 @@ test('parseOverride builds { idx: { param: value } } and rejects garbage', () =>
 
 test('MCP: initialize, tools/list, and a full session through tools/call', async () => {
   await withBankPair(async ({ relay }) => {
-    const client = createClient({ port: relay.port });
+    const client = createClient({ port: relay.port, token: relay.token });
     const init = await handle({ method: 'initialize', params: { protocolVersion: '2025-01-01' } }, client);
     assert.equal(init.serverInfo.name, 'witnessloop');
     assert.equal((await handle({ method: 'tools/list' }, client)).tools[0].name, 'witnessloop');
@@ -76,7 +76,7 @@ test('MCP: initialize, tools/list, and a full session through tools/call', async
 
 test('CLI end to end: export -> verify-bundle offline -> tamper one byte -> non-zero exit at the exact event', async () => {
   await withBankPair(async ({ relay, client }) => {
-    const env = { ...process.env, WITNESSLOOP_PORT: String(relay.port) };
+    const env = { ...process.env, WITNESSLOOP_PORT: String(relay.port), WITNESSLOOP_TOKEN: relay.token };
     const sid = await client.startSession({ goal: 'cli' });
     await transferVia(client, 'bob', 100);
     await client.endSession(sid);

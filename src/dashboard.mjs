@@ -20,7 +20,7 @@ export function gateStats(events) {
       list.push(e);
       decisionsOf.set(e.data.intent_idx, list);
     }
-    if (e.kind === 'command' && e.data?.intent_idx !== undefined) released.add(e.data.intent_idx);
+    if ((e.kind === 'command' || e.kind === 'command.begin') && e.data?.intent_idx != null) released.add(e.data.intent_idx);
   }
   const f = { intents: 0, policyAllow: 0, policyDeny: 0, policyAsk: 0, humanAllow: 0, humanDeny: 0, timeout: 0, released: 0, refused: 0 };
   const latencies = [];
@@ -28,13 +28,13 @@ export function gateStats(events) {
   for (const e of events.filter((x) => x.kind === 'intent')) {
     f.intents++;
     const [first, second] = decisionsOf.get(e.idx) ?? [];
-    const row = { idx: e.idx, type: e.type, params: e.data?.params ?? null, preview: e.data?.preview ?? null, verdict: first?.data.verdict ?? null, rule: first?.data.rule ?? null, reason: first?.data.reason ?? null, final: null, by: null, latencyMs: null };
+    const row = { idx: e.idx, type: e.type, params: e.data?.params ?? null, preview: e.data?.preview ?? null, verdict: first?.data.verdict ?? null, rule: first?.data.rule ?? null, reason: first?.data.reason ?? null, final: null, by: null, approver: null, latencyMs: null };
     if (first?.data.verdict === 'allow') { f.policyAllow++; row.final = 'allow'; row.by = 'policy'; }
     else if (first?.data.verdict === 'deny') { f.policyDeny++; row.final = 'deny'; row.by = 'policy'; }
     else if (first?.data.verdict === 'require_approval') {
       f.policyAsk++;
       if (second) {
-        row.final = second.data.verdict; row.by = second.data.by ?? null; row.latencyMs = ms(e.ts, second.ts);
+        row.final = second.data.verdict; row.by = second.data.by ?? null; row.approver = second.data.approver_fp ?? null; row.latencyMs = ms(e.ts, second.ts);
         if (second.data.by === 'timeout') f.timeout++;
         else if (second.data.verdict === 'allow') f.humanAllow++; else f.humanDeny++;
         latencies.push(row.latencyMs);
@@ -80,7 +80,7 @@ export function integrity(ledger, sessionId) {
   const strict = ledger.verifySessionId(sessionId, { strict: true });
   const verifyMs = performance.now() - t0;
   return {
-    ok: v.ok, strictOk: strict.ok, checked: v.checked, badIdx: v.badIdx, problems: v.problems, ended: v.ended,
+    ok: v.ok, strictOk: strict.ok, checked: v.checked, badIdx: v.badIdx, problems: v.problems, warnings: v.warnings, ended: v.ended,
     sealedThrough: v.sealedThrough, unsealedTail: v.checked - 1 - v.sealedThrough, signers: v.signers, verifyMs: +verifyMs.toFixed(2),
   };
 }
@@ -149,7 +149,7 @@ export async function sessionDetail(api, sessionId) {
   const timeline = events.map((e) => ({
     idx: e.idx, ts: e.ts, kind: e.kind, type: e.type, effect: e.effect, ok: e.ok === null ? null : !!e.ok, actor: e.actor,
     verdict: e.data?.verdict ?? null, by: e.data?.by ?? null, label: e.data?.label ?? null, why: e.data?.why ?? null,
-    params: e.kind === 'command' || e.kind === 'intent' ? e.data?.params ?? null : null, preview: e.data?.preview ?? null,
+    params: e.kind === 'command' || e.kind === 'command.begin' || e.kind === 'intent' ? e.data?.params ?? null : null, preview: e.data?.preview ?? null,
     error: e.data?.error ?? null, ms: e.data?.ms ?? null,
   }));
 

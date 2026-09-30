@@ -125,6 +125,34 @@ The paper (`paper.md`) is a system-and-position draft. Work needed to reach a su
 
 ---
 
+## Phase 1 status
+
+Implemented and tested (see `docs/THREAT-MODEL.md` for exactly what each does and does not prove):
+
+- **1.1** write-ahead `command.begin` for irreversible dispatches; `verify` reports unresolved dispatches (warning, error under `--strict`); analysis modules tolerate the new kind. Scope: irreversible commands only. Tests: `test/gate-relay.test.mjs`, `test/ledger.test.mjs`.
+- **1.2** `anchor`, file sink, pluggable sink function, `verify --anchor` / `verify-bundle --anchor`. Tests: `test/anchor.test.mjs` (a full rewrite resealed with the same key passes plain verify and fails against the anchor). Only meaningful with a sink the key holder cannot rewrite.
+- **1.3** approver keys (`keygen --role approver`), signed approvals over {id, verdict, nonce}, replay protection, `--trusted-approver`, `--allow-unsigned-approvals` (off by default). Tests: `test/approvers.test.mjs`.
+- **1.4** bearer token on every route and the agent WebSocket, token file with restricted permissions (icacls on Windows; `serve` refuses to start if it fails), dashboard token via URL fragment. Tests: `test/auth.test.mjs`.
+- **1.5** `rotate-key`, `revoke-key`, `key.rotate` / `key.revoke` chain events, rotation certs carried in bundles, verification from a pinned key across rotations. Tests: `test/keys.test.mjs`.
+
+Still open: no external anchor service or default sink; the shared token is not a per-person identity; approver keys are files (no hardware or OS keystore); the relay has no `Origin`/`Host` check or TLS; `command.begin` does not cover reversible commands; a corrupt key file is still silently regenerated; the dashboard does not show anchor status; browser-driven tests are timing-sensitive under parallel load and occasionally fail (they also did before Phase 1).
+
+## Phase 2 status
+
+Implemented and tested (`docs/THREAT-MODEL.md` limitation 2 says exactly what is and is not caught, and when). Everything here is detection or advice: nothing blocks an undeclared effect.
+
+- **2.2** the in-page agent reports non-GET `fetch`/XHR/`sendBeacon`/un-intercepted form submits during a click (`observed_effects`: method, origin, path, body hash); the relay writes an `undeclared_effect` flag under a `reversible` or unannotated click. After dispatch, never before. Tests: `test/observed.test.mjs` (relay side, fake agent), shop story in `test/e2e-browser.test.mjs` (real page).
+- **2.1** `src/detect.mjs`, `detect <session>`, and a "Detected after the fact" report section (reversible clicks whose app-server state changed, or that carry a recorded write; heuristic). New `examples/shop` story with an unannotated Pay button. Tests: `test/detect.test.mjs`.
+- **2.3** `lint-page <file|url>`: candidates, not verdicts; loopback URLs only unless the operator sets `WITNESSLOOP_LINT_ALLOW_REMOTE=1`. Tests: `test/lint.test.mjs`.
+- **2.4** `src/effects.mjs`; bank and mailer profiles rebuilt on it, with the old functions kept in `test/effects.test.mjs` as the reference for "output unchanged". Tests: `test/effects.test.mjs`.
+- **2.5** `policy --dry-run <session> [file]`, shadowed-rule and backtracking-regex warnings, a size/input/time cap on `matches` that fails to `require_approval`. Tests: `test/policy.test.mjs`.
+
+Also changed, not on the roadmap: the in-page agent now connects only after the page's load event and its own startup fetches settle (max 5 s wait), because a fork or new session could otherwise read a half-rendered page (`test/e2e-browser.test.mjs`, "announces a page only after..."). The dashboard browser test now waits for a tab instead of sleeping 300 ms, and one Phase 1 approval test uses a longer timeout, both timing-only.
+
+Test run at the end of Phase 2: 142 tests, 142 pass, three consecutive `npm test` runs. Earlier runs in the same session had 1 or 2 failures each (browser tests and two timing-sensitive tests under parallel load, and a Windows libuv abort when a runner force-exit raced closing sockets); those were fixed in the tests, not by loosening an assertion.
+
+Still open: no prevention of undeclared effects (only the gate on annotated ones); the observer misses WebSocket traffic, timers after the click settles, a `fetch` saved before the agent loaded, workers and frames; the offline detector needs the adapter and `mutating` checkpoints and only sees app-server state; body hashes of low-entropy bodies can be guessed offline; `lint-page` cannot see JavaScript-wired controls; shadowing warnings only cover provable cases and `matches` limits are wall-clock (a machine stalled twice can produce a spurious limit hit, which resolves to `require_approval`).
+
 ## Dashboard status
 
 Shipped: `src/dashboard.mjs` (analytics + `/dashboard/*` routes), `src/dashboard/index.html` (served at `/dashboard`), tests in `test/dashboard.test.mjs` and a real-browser render test `test/dashboard-browser.test.mjs`. Views: chain health, tamper demo, timeline, decision funnel, approval latency, repeated intents, bisect + invariant strip, state diff, causal graph, fork compare, policy what-if, rule hit map, agent comparison, recorded overhead.
@@ -222,6 +250,89 @@ Finish by updating docs/THREAT-MODEL.md limitations 1, 3 and 4 with exactly what
 and what is not, and by adding a "Phase 1 status" note to roadmap.md.
 ```
 
+Done, here is generated claude code plan :
+
+```
+User approved Claude's plan
+Plan saved to: C:\Users\user\.claude\plans\sharded-shimmying-raven.md · /plan to edit
+Phase 1 plan: close the trust gaps (roadmap 1.1 to 1.5)
+
+Context
+
+Phase 0 proved the chain detects edits. Phase 1 closes what THREAT-MODEL limitations 1, 3 and 4 still admit: the result of a dispatch is recorded after the click (a crash hides a real effect), the key holder can rewrite and reseal history, approvals are self-declared strings, the relay has no auth, and there is no key rotation. Rules from the prompt apply: node built-ins only, fail closed, a failing-without-the-change test per behaviour, op table stays the single CLI/MCP source, no commit unless asked, docs claim only what a test proves.
+
+Decisions already made with the user: command.begin for irreversible commands only; rotation via certs in bundle + chain events; token file perms via icacls, refuse to start if it fails; token always on, no off switch.
+
+Order: 1.1, 1.2, 1.5, 1.3, 1.4 (1.4 last: it touches every test helper, so the earlier items stay reviewable). Run npm test after each item and report real output. Baseline: 70 pass.
+
+Shared groundwork (small, done inside 1.1)
+
+- verifySession (src/ledger.mjs:25) gets an additive warnings: [] in its result. Non-strict: unresolved dispatch is a warning; strict: a problem. verifyBundle defaults strict, so verify-bundle fails on it by default; verifySessionId defaults non-strict.
+- verifySession opts change from trustedKey (one fingerprint) to also accept sets (trustedKeys, trustedApprovers, anchors, revoked) additively. Keep trustedKey working.
+- client.verify(id, strict) (src/client.mjs:42) becomes verify(id, opts) with query params; route (relay.mjs:221) forwards them. Update the op and callers.
+- dashboard.integrity (src/dashboard.mjs:77) surfaces warnings, and the "anchoring not built" note in src/dashboard/index.html:177 is updated when 1.2 lands.
+
+1.1 Write-ahead result recording
+
+- runCommand (src/relay.mjs:106-161): for effect === 'irreversible' and released, append command.begin (kind:'command.begin', actor, type, effect, data:{params, intent_idx}) immediately before dispatch (:136). The later command event gets data.begin_idx. An append failure here throws, so nothing is dispatched (fail closed).
+- Pairing rule in verifySession: every command.begin idx must be referenced by a later command event's begin_idx. Unmatched: warning unresolved dispatch: intent #N was released and dispatched but no result was recorded; strict makes it a problem at the begin idx.
+- Tolerate the new kind: causal.mjs:36 whitelist (add command.begin, edge begun, no node-count regressions in analysis.test), bisect.mjs (checkpoint after_idx stays the command idx, never the begin), replay.mjs (commands filter at :42 is kind==='command', so a begin is never re-run; forks re-create their own begin through runCommand; attempts() :102 must not treat a begin as an attempt and must not call a crashed dispatch "denied" if a begin exists), report.mjs (timeline note for begin, show verify.warnings, count unresolved), dashboard.mjs (summarize/sessionDetail timeline params for begin; lane list in index.html:185 gets command.begin).
+- Tests (test/gate-relay.test.mjs, test/ledger.test.mjs, test/analysis.test.mjs): update the irreversible sequence assertion at :62 to intent, decision, decision, command.begin, command, checkpoint (only that assertion; :38 is untouched); new test patches relay.ledger.append to throw on kind==='command' after dispatch (same pattern as gate-relay.test.mjs:120), asserts the click reached bank.agent.seen, then verify non-strict has a warning and strict fails at the begin idx; pure verifySession test for begin without result; fork/replay-verify still reproduce with begin events present; a begin append failure dispatches nothing.
+
+1.2 External seal anchoring
+
+- New src/anchor.mjs: anchorRecord(session, seal) = {session, head_idx, head_hash, ts}; fileSink(path) appends one canonical JSON line (fsync); sink interface = async ({session, head_hash, seal}) => void; readAnchors(path).
+- Op anchor <session> [--sink <file>] in src/ops.mjs (relay route POST /sessions/:id/anchor, client method, MCP automatically). Relay option anchorSink so seals can be anchored on creation; ledger keeps its own logic (no sink calls inside Ledger).
+- Verification: verify --anchor <file> and verify-bundle --anchor <file> (multi-value). For each anchored record of that session: the bundle must contain an event at head_idx whose hash equals head_hash, else a problem (history differs from anchored seal); an anchored head beyond the bundle length is truncated relative to anchor. cli.mjs:78 exit code already covers verify/verify-bundle.
+- Test: build a session, anchor, then rewrite the whole history and reseal with the same key; plain verify passes, verify --anchor fails. Also truncation past the anchor, missing anchor file, malformed line (fail closed = verification fails).
+- Docs: anchoring helps only if the sink is outside the key holder's control; a local file sink protects nothing against someone with disk access.
+
+1.5 Key rotation and revocation
+
+- src/attest.mjs: keyCert(oldPriv, oldPub, newPub, ts) = {old_pub,new_pub,ts,sig} signed over canon; verifyCert. Key file gains optional history (certs) so rotation survives restart; corrupt key files stay a hard error only for rotation paths (existing silent regenerate behaviour is documented, not changed here).
+- Ops rotate-key and revoke-key <fingerprint> (op table, relay routes, client). Ledger gets rotateKey(newKey, cert) (only seal() reads this.key, ledger.mjs:181). On rotation the relay appends key.rotate (data: cert) to every active session, then seals with the old key just before switching. revoke-key appends key.revoke (data:{fingerprint, ts, sig by a currently trusted key}).
+- Bundle gains rotations: [certs] (additive, still witnessloop.bundle/1; older bundles verify as before).
+- Verifier: trusted set starts from the pinned key(s); reachable set = closure under valid certs (sig by a key already in the set). A seal by a key not reachable is rejected when a pin is given (today the mismatch is reported but the seal still counts toward sealedThrough; fix so it does not). A seal by a key with a key.revoke at chain idx R and head_idx > R is rejected. Unpinned verification is unchanged.
+- Tests across a rotation boundary: session sealed by old key then new key verifies from the old pin; forged cert (wrong signer) rejected; seal by unreachable key rejected; revoked-key seal after the revoke event rejected, before it accepted; session started after rotation verifies via bundle certs.
+- Limit to state: revocation only bites in chains that contain the key.revoke event or when the verifier is given the revoked fingerprint out of band; a key thief can still rewrite an already-ended session that never saw the revocation (mitigated only by anchors from 1.2).
+
+1.3 Authenticated approvers
+
+- keygen --role approver [--out] (ops.mjs:64 gains role; default file .witnessloop/approver.json). Relay option / serve --approver <fingerprint> (multi) registers allowed approver fingerprints; serve --allow-unsigned-approvals (bool) re-enables the legacy path, default off.
+- src/gate.mjs Approvals.request (:25) generates a random nonce per pending approval; list() returns it. Signed message = canon({id, verdict, nonce}) (verdict = allow|deny).
+- POST /gate/:id/approve|deny (relay.mjs:204-211) accepts {approver_pub, sig}: fingerprint must be registered, sig valid, nonce the pending one; the entry is consumed on resolve, and consumed nonces are remembered so a replay is rejected (401/403). Missing signature with unsigned disabled: 401 and the approval stays pending. Timeout still denies without any signature.
+- Second decision event (gate.mjs:58-61) stores approver_fp, approver_pub, sig, nonce; actor = approver:<fp> so self-declared by cannot masquerade (by kept as a label). Timeout/shutdown/auto-approve (shadow) decisions carry no approver.
+- Verification: --trusted-approver <fp> (multi) on verify/verify-bundle: every non-timeout human decision that allowed an irreversible action must have a valid signature over its recorded {id, verdict, nonce} by a listed fingerprint, else a problem at that decision idx. Without the flag nothing extra is required (stated in docs).
+- CLI approve|deny gain --key <approver file> and sign client-side; client.mjs approve(id, body) passes the body through. Note in docs: approve/deny are MCP actions too, so the agent can only approve if it can read an approver key; keep approver keys out of the MCP process.
+- Tests (gate-relay.test.mjs + ledger test): unsigned rejected, wrong (unregistered) key rejected, replayed nonce rejected, tampered verdict rejected (sign allow, submit deny), valid approval releases and records the fingerprint, verify with/without --trusted-approver, forged decision fingerprint in a bundle caught. Update stories.mjs reviewer, test helpers and demos to sign (or set allowUnsignedApprovals:true only in tests that are about something else, and say so).
+
+1.4 Relay authentication
+
+- createRelay (relay.mjs:26) always sets api.token (32 random bytes, hex) unless given one; compare with crypto.timingSafeEqual.
+- HTTP: check inside the request handler before routes.find (relay.mjs:254-255), Authorization: Bearer, 401 {ok:false,error} otherwise, for every route including /health. Only the static GET /dashboard HTML (:248) stays open (no data; a navigation cannot send headers).
+- WS: check in the upgrade handler (:268) before acceptWebSocket; token via Sec-WebSocket-Protocol is not supported by the raw browser API cleanly, so use a token query param on /agent; 401 raw HTTP response then destroy. Also reject replacing an existing agent name from an unauthenticated socket (already covered since auth precedes it).
+- Dashboard: token in the URL fragment (/dashboard#token=...); index.html reads it, moves it to a JS variable and clears it with history.replaceState, and api() (index.html:58) adds the header. CSP unchanged. serve and demo.mjs open the URL with the fragment; open.mjs already passes URLs verbatim.
+- Token distribution: serve writes .witnessloop/token and prints where. Permissions: fs.writeFileSync(..., {mode:0o600}) on POSIX; on win32 run icacls <file> /inheritance:r /grant:r <USERNAME>:F via execFileSync; if that fails, serve throws and does not start. Client (createClient, client.mjs:5-25), CLI and MCP (createClient() at mcp-server.mjs:56) read WITNESSLOOP_TOKEN or .witnessloop/token; no token means the request goes out without header and gets 401.
+- Plumb the token through: test/helpers/relay.mjs, test/helpers/fake-agent.mjs (health poll :26 and WS URL :9-10), examples/lib/stage.mjs (client :40, agent URL :46), src/agent/inject.js (store witness_token from the query param in sessionStorage, add to WS URL :227), test/cli-mcp.test.mjs (env at :79), test/dashboard.test.mjs (get/post helpers :6-7), dashboard-browser test URLs, examples/agents/demo.mjs URL fragment.
+- Tests (new test/auth.test.mjs): missing and wrong token return 401 on approve, deny, PUT /policy, POST /command, GET /health; WS upgrade without/with wrong token is refused and no agent registers; valid token works; dashboard HTML is served without token but its API is not; CLI without token exits non-zero; token file exists and (posix) mode 0600 / (win32) ACL command was invoked and failure aborts serve (injectable runner).
+- Limit to state: localhost only, bearer token is a shared secret readable by any process of the same user; no Origin/Host check (DNS rebinding) unless added; the app-origin page holds the agent token in sessionStorage, readable by scripts on that page.
+
+Docs and roadmap
+
+- docs/THREAT-MODEL.md limitations 1, 3, 4: rewrite each to what a named test now proves, and keep unenforced parts (key-thief rewrite without anchor, approver keys readable by the same OS user, token as shared secret, revocation scope, unsigned approvals only behind the flag).
+- README.md: new ops (anchor, rotate-key, revoke-key), new flags (--anchor, --trusted-approver, --allow-unsigned-approvals, --role approver, --approver), token/dashboard fragment, verify warnings.
+- roadmap.md: "Phase 1 status" note with real test counts and what remains.
+- No commit unless asked.
+
+Verification
+
+- npm test after each item; final report: files changed, tests added, real output including failures, remaining limitations.
+- Manual: node src/cli.mjs serve --no-open, then a bare curl gets 401 and witnessloop health works; demo.mjs bank --hold still opens the dashboard with the fragment token and every tab loads; tamper demo still detects all three modes; export a bundle, rewrite+reseal, verify-bundle --anchor fails.
+- Watch-list: gate-relay.test.mjs:62 sequence, analysis.test.mjs filters on dom.fill/dom.click (begin events carry type, so filter by kind==='command'), e2e counts (intents.length === 6), dashboard tamper-demo delete/truncate need >= 4/3 events.
+```
+
+
+
 ### Prompt: Phase 2 (detect what the gate cannot see)
 
 ```text
@@ -256,6 +367,64 @@ Task: implement roadmap Phase 2 (items 2.1 to 2.5). Goal: reduce reliance on the
 Update THREAT-MODEL.md limitation 2 to state precisely which undeclared effects are now caught, when
 (before or after dispatch), and which still are not. Add a "Phase 2 status" note to roadmap.md.
 ```
+
+Here is the implemented output :
+
+```
+Phase 2 (2.1 to 2.5) is implemented. npm test passed 142 of 142 on the last three consecutive runs, and nothing is committed. All of it is detection or advice: nothing blocks an undeclared effect. THREAT-MODEL.md limitation 2, the README and a "Phase 2 status" section in roadmap.md are updated.
+
+I also ran node examples/agents/demo.mjs shop --no-open and it prints the live flag and the after-the-fact line.
+
+What each item does
+
+- 2.2 network observer:
+  - What it reports: during a dom.click, inject.js reports non-GET fetch, XHR, sendBeacon and form submits the page did not intercept. It sends method, origin, path and a body hash only, never the body, headers or query string.
+  - What the relay does: it writes an undeclared_effect flag under a reversible or unannotated click, with what the page declared. The flag is written after dispatch, never before.
+  - Navigating form submits: a native form submit that unloads the page still gets recorded, because the agent pushes what it saw over the link before unload.
+  - Replay: observed_effects carries the origin, so replay.mjs now strips it before comparing runs; otherwise replay-verify would diverge on a shadow copy.
+- 2.1 offline detector: src/detect.mjs, a detect <session> op, and a "Detected after the fact" report section. It flags reversible clicks whose app-server state changed between the surrounding checkpoints, or that carry a recorded write. The output says "Detection after the fact, not prevention". New examples/shop has an unannotated Pay button.
+- 2.3 lint: lint-page <file|url> returns candidates with a "not verdicts" note. It fetches only loopback URLs, never follows redirects, and needs WITNESSLOOP_LINT_ALLOW_REMOTE=1 in the environment for anything else. It is also an MCP action, so an agent can't widen it.
+- 2.4 effect checks: src/effects.mjs, and the bank and mailer profiles are rebuilt on it. test/effects.test.mjs keeps the old functions as a reference and compares old against new, including why and evidence.
+- 2.5 policy:
+  - Dry-run: policy --dry-run <session> [file] shows what the policy would have decided for each recorded intent and changes nothing.
+  - Warnings: shadowed-rule and backtracking-regex warnings. Shadowing is only warned when provable, so a warning is never a guess.
+  - Regex cap: matches now has pattern-length, input-length and time caps. A limit hit becomes require_approval, or deny under a deny-by-default policy, never a silent no-match.
+
+Tests added
+
+39 new tests, from 103 to 142:
+
+┌───────────────────────────┬───────┐
+│           File            │ Tests │
+├───────────────────────────┼───────┤
+│ test/observed.test.mjs    │ 7     │
+├───────────────────────────┼───────┤
+│ test/detect.test.m
+│ test/e2e-browser.test.mjs │ 2     │
+└───────────────────────────┴───────┘
+
+While writing the observer tests I found a real bug in my own code: a lowercase method such as head was flagged as a write. The relay now uppercases methods, and treats an entry with no readable method as a write.
+
+Changes you didn't ask for
+
+- Agent connect timing: inject.js now connects only after the page's load event and its own startup fetches settle, with a 5 s cap. Fork and mailer-story runs were reading half-rendered pages, and that race caused the mailer failures under load. A new browser test fails without the change and passes with it. A page that never settles now connects up to 5 s later.
+- Test timing fixes: the dashboard browser test now waits for a tab instead of sleeping 300 ms. A Phase 1 approval test went from a 200 ms to a 1500 ms timeout. Two new test files wait 100 ms for sockets to close, because Windows was aborting libuv when the runner force-exited. No assertion was loosened.
+- Runs with failures: before those fixes, my runs had 1 or 2 failures each, from these timing races under parallel load. Two failures came from my regex time cap being too short (50 ms) under load. I raised it to 250 ms, with one retry at 1 s.
+
+Still not caught
+
+- Prevention: any undeclared effect is still not prevented.
+- Observer blind spots: requests after the click settles, WebSocket.send, a fetch the page saved before the agent loaded, workers and frames, GETs with side effects, and effects not tied to a click.
+- Detector scope: it needs the adapter and mutating checkpoints, and it sees only app-server state. Page-storage changes are deliberately not flagged.
+- Body hashes: a hash of a low-entropy body (a short password) can be guessed offline. It is null in an insecure context.
+- Lint scope: lint-page can't see JavaScript-wired controls or forms that scripts build.
+- Regex time cap: it is wall-clock. A machine stalled twice in a row can produce a spurious limit hit (safe but nondeterministic), and a real blowup holds the relay about 1.25 s per evaluation.
+- Dry-run: it re-checks the policy verdict only. It does not re-ask a human.
+
+I can commit and push this, along with the Phase 1 work, when you say so.
+```
+
+
 
 ### Prompt: Phase 3 (broader worlds and stronger replay)
 
@@ -421,3 +590,5 @@ update THREAT-MODEL.md, add a "Phase N status" note to roadmap.md, and stop and 
 summary before starting the next phase. If any item cannot be done without a design decision or a new
 dependency, skip it, record why in roadmap.md, and continue.
 ```
+
+# 

@@ -16,7 +16,8 @@ function lastCheckpointBefore(events, idx) {
   return cp;
 }
 
-const norm = (v, volatileKeys) => hashOf(stripKeys(v, volatileKeys));
+// observed_effects carries the page origin, which differs between production and a shadow copy: never part of a replay comparison
+const norm = (v, volatileKeys) => hashOf(stripKeys(v, [...(volatileKeys ?? []), 'observed_effects']));
 
 // override: { "<eventIdx>": { "params.amount": "50" } }  (dotted paths into the recorded data)
 function applyOverride(c, override) {
@@ -100,7 +101,8 @@ export async function replayVerify(relay, { sessionId, shadowAgent, actor = 'ver
 
 // An "attempt" is a command that ran, or an irreversible intent that was refused.
 function attempts(events, volatileKeys) {
-  const ran = new Set(events.filter((e) => e.kind === 'command' && e.data.intent_idx !== undefined).map((e) => e.data.intent_idx));
+  // a begin without a result was still dispatched: it is not a refusal (verify reports it as unresolved)
+  const ran = new Set(events.filter((e) => (e.kind === 'command' || e.kind === 'command.begin') && e.data.intent_idx !== undefined && e.data.intent_idx !== null).map((e) => e.data.intent_idx));
   const out = [];
   for (const e of events) {
     if (e.kind === 'command') out.push({ idx: e.idx, type: e.type, params: e.data.params, denied: false, outcome: norm({ ok: !!e.ok, result: e.data.result, error: e.data.error }, volatileKeys) });

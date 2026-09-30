@@ -2,6 +2,9 @@
 // every op here is a CLI command AND an MCP action unless it says otherwise.
 import fs from 'node:fs';
 import { verifyBundle } from './ledger.mjs';
+import { readKey } from './attest.mjs';
+import { fileSink, readAnchors } from './anchor.mjs';
+import { lintTarget } from './lint.mjs';
 
 const num = (v) => (v === undefined || v === null || v === '' ? v : Number(v));
 
@@ -24,6 +27,9 @@ function parseJsonOrFile(v, what) {
   try { return JSON.parse(text); } catch (e) { throw new Error(`${what} is not valid JSON: ${e.message}`); }
 }
 
+// --anchor files (one or many) -> the records the verifier checks; unreadable or malformed files throw, never mean "no anchors"
+const anchorsOf = (v) => (v === undefined ? null : [].concat(v).flatMap((f) => readAnchors(String(f))));
+
 export const OPS = [
   { name: 'health', desc: 'Relay status: connected agents and session count.', run: (c) => c.health() },
   { name: 'agents', desc: 'List connected browser agents.', run: (c) => c.agents() },
@@ -35,14 +41,21 @@ export const OPS = [
     desc: 'Run a page command. Irreversible clicks go through the gate and may wait for approval.',
     run: (c, a) => c.cmd(a.type, parseJsonOrFile(a.params, 'params') ?? {}, { agent: a.agent, actor: a.actor }) },
   { name: 'intents', desc: 'Irreversible actions waiting for a human decision.', run: (c) => c.pending() },
-  { name: 'approve', pos: ['id'], flags: ['by', 'reason'], usage: 'approve <intent-id> [--by <name>] [--reason <text>]', desc: 'Release a pending irreversible action.', run: (c, a) => c.approve(a.id, { by: a.by, reason: a.reason }) },
-  { name: 'deny', pos: ['id'], flags: ['by', 'reason'], usage: 'deny <intent-id> [--by <name>] [--reason <text>]', desc: 'Refuse a pending irreversible action.', run: (c, a) => c.deny(a.id, { by: a.by, reason: a.reason }) },
-  { name: 'policy', usage: 'policy [<file.json|json>]', pos: ['policy'], optPos: ['policy'], desc: 'Show the gate policy, or replace it.', run: (c, a) => (a.policy === undefined ? c.getPolicy() : c.setPolicy(parseJsonOrFile(a.policy, 'policy'))) },
+  { name: 'approve', pos: ['id'], flags: ['by', 'reason', 'key'], usage: 'approve <intent-id> [--key <approver.json>] [--by <name>] [--reason <text>]', desc: 'Release a pending irreversible action, signed with an approver key (keygen --role approver).', run: (c, a) => c.approve(a.id, { by: a.by, reason: a.reason }, { key: a.key ? readKey(a.key) : undefined }) },
+  { name: 'deny', pos: ['id'], flags: ['by', 'reason', 'key'], usage: 'deny <intent-id> [--key <approver.json>] [--by <name>] [--reason <text>]', desc: 'Refuse a pending irreversible action.', run: (c, a) => c.deny(a.id, { by: a.by, reason: a.reason }, { key: a.key ? readKey(a.key) : undefined }) },
+  { name: 'policy', usage: 'policy [<file.json|json>] [--dry-run <session>]', pos: ['policy'], optPos: ['policy'], flags: ['dryRun'], desc: 'Show the gate policy, or replace it. With --dry-run <session>: what the given (or current) policy would have decided for every recorded intent, plus shadowed-rule and regex warnings. Changes nothing.',
+    run: (c, a) => (a.dryRun !== undefined ? c.policyDryRun(num(a.dryRun), a.policy === undefined ? undefined : parseJsonOrFile(a.policy, 'policy')) : a.policy === undefined ? c.getPolicy() : c.setPolicy(parseJsonOrFile(a.policy, 'policy'))) },
   { name: 'checkpoint', flags: ['agent', 'label'], usage: 'checkpoint [--agent <name>] [--label <text>]', desc: 'Capture the world now.', run: (c, a) => c.checkpoint(a.agent, a.label) },
-  { name: 'verify', pos: ['id'], bools: ['strict'], usage: 'verify <session> [--strict]', desc: 'Verify a session chain and seals in the ledger.', run: (c, a) => c.verify(num(a.id), !!a.strict) },
-  { name: 'verify-bundle', pos: ['file'], flags: ['trustedKey'], usage: 'verify-bundle <file.wl.json> [--trusted-key <fingerprint>]', local: true,
+  { name: 'verify', pos: ['id'], flags: ['anchor', 'trustedKey', 'trustedApprover'], bools: ['strict'], multi: ['anchor', 'trustedKey', 'trustedApprover'], usage: 'verify <session> [--strict] [--anchor <file>]... [--trusted-key <fingerprint>]... [--trusted-approver <fingerprint>]...', desc: 'Verify a session chain and seals in the ledger; with --anchor also check the history against seals copied outside it.',
+    run: (c, a) => c.verify(num(a.id), { strict: !!a.strict, anchors: anchorsOf(a.anchor), trustedKeys: a.trustedKey ? [].concat(a.trustedKey) : null, trustedApprovers: a.trustedApprover ? [].concat(a.trustedApprover) : null }) },
+  { name: 'verify-bundle', pos: ['file'], flags: ['trustedKey', 'trustedApprover', 'anchor'], multi: ['anchor', 'trustedKey', 'trustedApprover'], usage: 'verify-bundle <file.wl.json> [--trusted-key <fingerprint>]... [--trusted-approver <fingerprint>]... [--anchor <file>]...', local: true,
     desc: 'Verify an exported bundle offline: no relay, no database.',
-    run: (_c, a) => verifyBundle(JSON.parse(fs.readFileSync(a.file, 'utf8')), { trustedKey: a.trustedKey ?? null }) },
+    run: (_c, a) => verifyBundle(JSON.parse(fs.readFileSync(a.file, 'utf8')), { trustedKeys: a.trustedKey ? [].concat(a.trustedKey) : null, trustedApprovers: a.trustedApprover ? [].concat(a.trustedApprover) : null, anchors: anchorsOf(a.anchor) }) },
+  // In the shared table, so also MCP actions (the parity rule). Anyone holding the relay token can rotate or revoke: see THREAT-MODEL.
+  { name: 'rotate-key', usage: 'rotate-key', desc: 'Switch the relay to a new signing key; the old key signs the handover, and active sessions record it.', run: (c) => c.rotateKey() },
+  { name: 'revoke-key', pos: ['fingerprint'], usage: 'revoke-key <fingerprint>', desc: 'Declare a key untrusted for seals made after this point in every active session (the current key cannot be revoked; rotate first).', run: (c, a) => c.revokeKey(a.fingerprint) },
+  { name: 'anchor', pos: ['id'], flags: ['sink'], usage: 'anchor <session> [--sink <file>]', desc: 'Seal the session head and copy the seal hash outside the ledger (to --sink on this machine, and to the relay sink if it has one).',
+    run: async (c, a) => { const r = await c.anchor(num(a.id)); if (a.sink) await fileSink(a.sink)({ session: r.session, head_hash: r.head_hash, seal: r.seal }); return { session: r.session, head_idx: r.head_idx, head_hash: r.head_hash, ts: r.ts, relaySink: r.sunk, ...(a.sink ? { written: a.sink } : {}) }; } },
   { name: 'export', pos: ['id'], flags: ['out'], usage: 'export <session> [--out <file.wl.json>]', desc: 'Export a self-contained, verifiable bundle.',
     run: async (c, a) => { const b = await c.bundle(num(a.id)); if (!a.out) return b; fs.writeFileSync(a.out, JSON.stringify(b)); return { written: a.out, events: b.events.length, seals: b.seals.length }; } },
   { name: 'causal', pos: ['id'], usage: 'causal <session>', desc: 'Causal graph (recorded and inferred edges).', run: (c, a) => c.causal(num(a.id)) },
@@ -57,11 +70,13 @@ export const OPS = [
     }) },
   { name: 'replay-verify', pos: ['id'], flags: ['shadow'], usage: 'replay-verify <session> --shadow <agent>', desc: 'Re-run a session unchanged on a shadow agent and check it reproduces.', run: (c, a) => c.replayVerify(num(a.id), { shadow: a.shadow }) },
   { name: 'compare', pos: ['a', 'b'], usage: 'compare <sessionA> <sessionB>', desc: 'First divergence and world diff between two sessions.', run: (c, a) => c.compare(num(a.a), num(a.b)) },
+  { name: 'lint-page', pos: ['target'], usage: 'lint-page <file|url>', local: true, desc: 'List forms, buttons and links that look like they change something but carry no data-wl-effect. Candidates, not verdicts; only loopback URLs unless WITNESSLOOP_LINT_ALLOW_REMOTE=1.', run: (_c, a) => lintTarget(a.target) },
+  { name: 'detect', pos: ['id'], usage: 'detect <session>', desc: 'Reversible clicks whose recorded consequences look external (server state changed, or a write was observed). Detection after the fact, not prevention.', run: (c, a) => c.detect(num(a.id)) },
   { name: 'report', pos: ['id'], usage: 'report <session>', desc: 'Markdown audit report.', markdown: true, run: async (c, a) => (await c.report(num(a.id))).markdown },
-  { name: 'serve', cli: true, flags: ['port', 'db', 'key', 'policy', 'profile', 'checkpoints', 'approvalTimeoutMs'], bools: ['noOpen'],
-    usage: 'serve [--port N] [--db <file>] [--key <file>] [--policy <file>] [--profile <module>] [--checkpoints mutating|irreversible|none] [--approval-timeout-ms N] [--no-open]',
+  { name: 'serve', cli: true, flags: ['port', 'db', 'key', 'policy', 'profile', 'checkpoints', 'approvalTimeoutMs', 'anchorSink', 'approver'], bools: ['noOpen', 'allowUnsignedApprovals'], multi: ['approver'],
+    usage: 'serve [--port N] [--db <file>] [--key <file>] [--policy <file>] [--profile <module>] [--checkpoints mutating|irreversible|none] [--approval-timeout-ms N] [--anchor-sink <file>] [--approver <fingerprint>]... [--allow-unsigned-approvals] [--no-open]',
     desc: 'Start the relay and open the dashboard in your browser (skipped with --no-open, WITNESSLOOP_NO_OPEN=1, CI, or piped output).' },
-  { name: 'keygen', cli: true, flags: ['out'], usage: 'keygen [--out <file>]', desc: 'Create the signing key (default .witnessloop/key.json).' },
+  { name: 'keygen', cli: true, flags: ['out', 'role'], usage: 'keygen [--role signer|approver] [--out <file>]', desc: 'Create the relay signing key (default .witnessloop/key.json) or, with --role approver, an approver key (default .witnessloop/approver.json).' },
 ];
 
 export const mcpName = (op) => op.name.replace(/-/g, '_');

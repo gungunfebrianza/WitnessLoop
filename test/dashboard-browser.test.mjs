@@ -8,6 +8,8 @@ import { stories } from '../examples/agents/stories.mjs';
 
 const skip = browserSkip();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// wait for a rendered condition instead of a fixed sleep: the suite runs files in parallel, so timings vary
+async function until(get, re, ms = 15000) { let t = ''; for (let i = 0; i < ms / 100; i++) { t = await get(); if (re.test(t)) return t; await sleep(100); } return t; }
 
 test('dashboard renders every view for a real session and treats ledger text as text', { skip: skip ?? false, timeout: 120000 }, async () => {
   const stage = await startStage('bank');
@@ -19,7 +21,7 @@ test('dashboard renders every view for a real session and treats ledger text as 
     const sid2 = await stage.client.startSession({ goal: evil, actor: '<b>bold</b>' });
     await stage.client.endSession(sid2);
 
-    await viewer.navigate(`http://127.0.0.1:${stage.relay.port}/dashboard`);
+    await viewer.navigate(`http://127.0.0.1:${stage.relay.port}/dashboard#token=${stage.relay.token}`);
     const text = async (sel) => viewer.evaluate(`document.querySelector(${JSON.stringify(sel)})?.innerText ?? ''`);
     for (let i = 0; i < 150 && !/integrity across all sessions/i.test(await text('main')); i++) await sleep(100);
 
@@ -32,22 +34,22 @@ test('dashboard renders every view for a real session and treats ledger text as 
     // open the bank session and walk every tab
     await viewer.evaluate(`[...document.querySelectorAll('nav button.s')].find((b) => b.innerText.startsWith('#${r.sid} ')).click()`);
     const walk = async (label, expected) => {
-      await viewer.evaluate(`(async () => { await new Promise((r) => setTimeout(r, 300)); [...document.querySelectorAll('.tabs button')].find((b) => b.innerText === ${JSON.stringify(label)}).click(); await new Promise((r) => setTimeout(r, 400)); })()`);
-      const t = await text('main');
+      // the tab row is drawn after the session detail arrives, which can be slow under parallel load: wait for the tab itself
+      await viewer.evaluate(`(async () => { let b; for (let i = 0; i < 150 && !b; i++) { await new Promise((r) => setTimeout(r, 100)); b = [...document.querySelectorAll('.tabs button')].find((x) => x.innerText === ${JSON.stringify(label)}); } b.click(); })()`);
+      const t = await until(() => text('main'), expected);
       assert.match(t, expected, `${label} view`);
       return t;
     };
     await walk('Integrity', /chain and seals verify/);
     await viewer.evaluate(`[...document.querySelectorAll('button.a')].find((b) => b.innerText === 'Flip one payload byte').click()`);
-    await sleep(600);
-    assert.match(await text('main'), /verifier detected it/);
+    assert.match(await until(() => text('main'), /verifier detected it/), /verifier detected it/);
     await walk('Money', /deviation from expected total/i);
     assert.ok(await viewer.evaluate('document.querySelectorAll("main svg rect").length > 10'), 'money tab draws stacked and deviation bars');
     assert.match(await text('main'), /off by -[0-9]+ cents/i);
     assert.match(await text('main'), /2 of 4 transfers flagged/i);
     await walk('Timeline', /session timeline/i);
     assert.ok(await viewer.evaluate('document.querySelectorAll("main svg circle").length > 10'), 'timeline draws event markers');
-    assert.match(await text('main') + await viewer.evaluate('document.querySelector("main svg").innerHTML'), /first bad: #17/);
+    assert.match(await text('main') + await viewer.evaluate('document.querySelector("main svg").innerHTML'), /first bad: #19/);
     await walk('Decision funnel', /policy: needs approval/);
     const incident = await walk('Incident', /money not conserved/);
     assert.match(incident, /reviewer-1|policy/);
@@ -56,8 +58,7 @@ test('dashboard renders every view for a real session and treats ledger text as 
     assert.ok(await viewer.evaluate('document.querySelectorAll("main svg path").length > 0'), 'causal arcs drawn');
     await walk('Forks', /compare/);
     await viewer.evaluate(`[...document.querySelectorAll('button.a')].find((b) => b.innerText === 'compare').click()`);
-    await sleep(800);
-    assert.match(await text('main'), /refused in the second session/);
+    assert.match(await until(() => text('main'), /refused in the second session/), /refused in the second session/);
     await walk('Policy what-if', /alternative policy/);
 
     assert.equal(await viewer.evaluate('window.__pwned'), undefined, 'hostile ledger text must not execute');
@@ -82,14 +83,13 @@ for (const [app, tab, title, off, flagged, item] of worldCases) {
     const viewer = await launchBrowser();
     try {
       await stories[app].story(stage);
-      await viewer.navigate(`http://127.0.0.1:${stage.relay.port}/dashboard`);
+      await viewer.navigate(`http://127.0.0.1:${stage.relay.port}/dashboard#token=${stage.relay.token}`);
       const text = async () => viewer.evaluate(`document.querySelector('main')?.innerText ?? ''`);
       for (let i = 0; i < 150 && !/integrity across all sessions/i.test(await text()); i++) await sleep(100);
       await viewer.evaluate(`[...document.querySelectorAll('nav button.s')].find((b) => b.innerText.startsWith('#1 ')).click()`);
       await sleep(500);
       await viewer.evaluate(`[...document.querySelectorAll('.tabs button')].find((b) => b.innerText === ${JSON.stringify(tab)}).click()`);
-      await sleep(400);
-      const t = await text();
+      const t = await until(text, off);
       assert.match(t, title);
       assert.match(t, off);
       assert.match(t, flagged);

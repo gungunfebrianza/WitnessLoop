@@ -5,16 +5,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRelay } from '../../src/relay.mjs';
 import { createClient } from '../../src/client.mjs';
+import { generateKey, fingerprint } from '../../src/attest.mjs';
 import { launchBrowser } from './browser.mjs';
 import { startBank } from '../bank/server.mjs';
 import { startMailer } from '../mailer/server.mjs';
 import { startTodo } from '../todo/server.mjs';
+import { startShop } from '../shop/server.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APPS = {
   bank: { start: startBank, policy: 'bank.json' },
   mailer: { start: startMailer, policy: 'mailer.json' },
   todo: { start: startTodo, policy: null },
+  shop: { start: startShop, policy: null },
 };
 
 export const readPolicy = (file) => JSON.parse(fs.readFileSync(path.join(HERE, '..', 'policies', file), 'utf8'));
@@ -30,20 +33,21 @@ async function waitAgent(client, name, timeoutMs = 10000) {
 
 export async function startStage(appName, { policy, approvalTimeoutMs = 15000 } = {}) {
   const def = APPS[appName];
-  if (!def) throw new Error(`unknown app "${appName}" (bank, mailer, todo)`);
+  if (!def) throw new Error(`unknown app "${appName}" (bank, mailer, todo, shop)`);
   const { profile } = await import(`../${appName}/profile.mjs`);
+  const approverKey = generateKey();
   const relay = await createRelay({
-    port: 0, profile, approvalTimeoutMs,
+    port: 0, profile, approvalTimeoutMs, approvers: [fingerprint(approverKey.publicKey)],
     policy: policy ?? (def.policy ? readPolicy(def.policy) : { default: 'allow', rules: [] }),
   });
   await relay.listen();
-  const client = createClient({ port: relay.port });
+  const client = createClient({ port: relay.port, approverKey, token: relay.token });
 
   const sides = {};
   for (const name of ['default', 'shadow']) {
     const app = await def.start();
     const browser = await launchBrowser();
-    await browser.navigate(`${app.origin}/?witness=1&witness_port=${relay.port}&witness_name=${name}`);
+    await browser.navigate(`${app.origin}/?witness=1&witness_port=${relay.port}&witness_name=${name}&witness_token=${relay.token}`);
     await waitAgent(client, name);
     sides[name] = { app, browser };
   }

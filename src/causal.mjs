@@ -33,7 +33,7 @@ export function buildCausal(events) {
   const commands = [];
   const lastDecisionFor = new Map();
   for (const e of events) {
-    if (!['intent', 'decision', 'command', 'flag', 'checkpoint'].includes(e.kind)) continue;
+    if (!['intent', 'decision', 'command.begin', 'command', 'flag', 'checkpoint'].includes(e.kind)) continue;
     nodes.push({ idx: e.idx, kind: e.kind, type: e.type ?? null, effect: e.effect ?? null, ok: e.ok === null ? null : !!e.ok });
     const d = e.data ?? {};
     if (e.kind === 'decision') {
@@ -41,7 +41,9 @@ export function buildCausal(events) {
       if (d.resolves_idx !== undefined) add(d.resolves_idx, e.idx, 'resolved_by');
       if (e.ok) lastDecisionFor.set(d.intent_idx, e.idx);
     }
+    if (e.kind === 'command.begin') add(lastDecisionFor.get(d.intent_idx), e.idx, 'released'); // the write-ahead record of the dispatch
     if (e.kind === 'command') {
+      if (d.begin_idx !== undefined) add(d.begin_idx, e.idx, 'completed');
       if (d.intent_idx !== undefined) add(lastDecisionFor.get(d.intent_idx), e.idx, 'released');
       commands.push(e);
     }

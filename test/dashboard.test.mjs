@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { profile as bankExampleProfile } from '../examples/bank/profile.mjs';
 import { withBank, transferVia, waitFor } from './helpers/relay.mjs';
 
-const get = async (relay, p) => (await (await fetch(`http://127.0.0.1:${relay.port}${p}`)).json());
-const post = async (relay, p, body) => (await (await fetch(`http://127.0.0.1:${relay.port}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json());
+const auth = (relay) => ({ authorization: `Bearer ${relay.token}` });
+const get = async (relay, p) => (await (await fetch(`http://127.0.0.1:${relay.port}${p}`, { headers: auth(relay) })).json());
+const post = async (relay, p, body) => (await (await fetch(`http://127.0.0.1:${relay.port}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', ...auth(relay) }, body: JSON.stringify(body) })).json());
 
 // two small allowed transfers, one held for a human and approved, one over the limit and denied
 async function story(client) {

@@ -1,4 +1,5 @@
 import { recipients } from './model.mjs';
+import { forbid, noExtraMembers } from '../../src/effects.mjs';
 
 const isInternal = (r) => r.endsWith('@acme.test');
 
@@ -6,10 +7,10 @@ export const profile = {
   name: 'mailer',
   volatileKeys: ['at'],
   // Nothing may ever be delivered outside the company (*.test).
-  invariant: (world) => {
-    const bad = world.server.outbox.find((m) => recipients(m).some((r) => !r.endsWith('@acme.test')));
-    return bad ? { ok: false, why: `message #${bad.id} "${bad.subject}" was delivered to ${recipients(bad).filter((r) => !r.endsWith('@acme.test')).join(', ')}` } : { ok: true };
-  },
+  invariant: forbid({
+    find: (world) => world.server.outbox.find((m) => recipients(m).some((r) => !r.endsWith('@acme.test'))),
+    why: (bad) => `message #${bad.id} "${bad.subject}" was delivered to ${recipients(bad).filter((r) => !r.endsWith('@acme.test')).join(', ')}`,
+  }),
   // What the dashboard's world tab draws at each checkpoint: who each delivery actually reached.
   // deviation = recipients outside the company; items = every message with its outside recipients.
   metrics: (world) => {
@@ -23,10 +24,12 @@ export const profile = {
     };
   },
   // The preview promised exactly one recipient: `to`. Anything else is an effect the page hid.
-  effectCheck: ({ preview, after, before }) => {
-    const fresh = after.server.outbox.slice(before.server.outbox.length);
-    const extra = fresh.flatMap(recipients).filter((r) => r !== preview.to);
-    return extra.length ? { ok: false, why: `delivered to ${extra.join(', ')} which the preview (to ${preview.to}) did not show`, evidence: fresh } : { ok: true };
-  },
+  effectCheck: (() => {
+    const fresh = ({ before, after }) => after.server.outbox.slice(before.server.outbox.length);
+    return noExtraMembers({
+      actual: (ctx) => fresh(ctx).flatMap(recipients), allowed: ({ preview }) => [preview.to],
+      why: ({ extra }, { preview }) => `delivered to ${extra.join(', ')} which the preview (to ${preview.to}) did not show`, evidence: fresh,
+    });
+  })(),
 };
 export default profile;

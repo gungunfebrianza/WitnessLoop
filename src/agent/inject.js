@@ -10,6 +10,8 @@
     if (qs.get('witness') === '0') localStorage.removeItem('witness_enabled');
     if (qs.get('witness_port')) localStorage.setItem('witness_port', qs.get('witness_port'));
     if (qs.get('witness_name')) sessionStorage.setItem('witness_name', qs.get('witness_name'));
+    // sessionStorage, not localStorage: the token is per tab and does not outlive it (any script on this page can still read it)
+    if (qs.get('witness_token')) sessionStorage.setItem('witness_token', qs.get('witness_token'));
   } catch { /* storage blocked: stay dormant */ }
   let enabled = false;
   try { enabled = localStorage.getItem('witness_enabled') === '1'; } catch { /* dormant */ }
@@ -17,6 +19,7 @@
 
   const PORT = localStorage.getItem('witness_port') || '8974';
   const NAME = sessionStorage.getItem('witness_name') || 'default';
+  const TOKEN = sessionStorage.getItem('witness_token') || '';
   const LOAD_ID = Math.random().toString(36).slice(2);
   const ADAPTER = !!document.querySelector('meta[name="witness-adapter"]');
   const EFFECTS = ['read', 'reversible', 'irreversible'];
@@ -26,7 +29,72 @@
   // ---- track in-flight fetches so a click can wait for the app to finish reacting ----
   let inflight = 0;
   const realFetch = window.fetch.bind(window);
-  window.fetch = (...args) => { inflight++; return realFetch(...args).finally(() => { inflight--; }); };
+  window.fetch = (...args) => { note(() => fromFetch(args)); inflight++; return realFetch(...args).finally(() => { inflight--; }); };
+
+  // ---- observe outgoing writes during a click (detection after the fact, never a block) ----
+  // Only method, origin, path and a hash of the body are kept: no headers, query string, cookies or body text.
+  // Not seen: WebSocket.send, requests after the click settles, and fetches a page captured before this script ran.
+  let watching = null;
+  const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
+  const enc = new TextEncoder();
+  async function bodyBytes(body) {
+    if (body === undefined || body === null) return new Uint8Array(0);
+    if (typeof body === 'string') return enc.encode(body);
+    if (body instanceof URLSearchParams) return enc.encode(body.toString());
+    if (body instanceof ArrayBuffer) return new Uint8Array(body);
+    if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+    if (typeof Blob !== 'undefined' && body instanceof Blob) return new Uint8Array(await body.arrayBuffer());
+    if (typeof FormData !== 'undefined' && body instanceof FormData) {
+      return enc.encode(JSON.stringify([...body.entries()].map(([k, v]) => [k, typeof v === 'string' ? v : `file:${v.name}:${v.size}`])));
+    }
+    return null;
+  }
+  async function hashBody(body) {
+    try {
+      if (!(window.crypto && crypto.subtle)) return null; // insecure context: no digest available
+      const bytes = await bodyBytes(body);
+      if (bytes === null) return null;
+      return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    } catch { return null; }
+  }
+  function record(method, url, body) {
+    if (!watching) return;
+    const m = String(method || 'GET').toUpperCase();
+    if (SAFE.has(m)) return;
+    let u;
+    try { u = new URL(String(url), location.href); } catch { return; }
+    watching.push(hashBody(body).then((body_hash) => ({ method: m, origin: u.origin, path: u.pathname, body_hash })));
+  }
+  const note = (fn) => { try { if (watching) fn(); } catch { /* observing must never break the page */ } };
+  const fromFetch = ([input, init]) => record(init?.method ?? (input instanceof Request ? input.method : 'GET'), input instanceof Request ? input.url : input, init?.body);
+  const xhrOpen = XMLHttpRequest.prototype.open;
+  const xhrSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) { this.__wl = { method, url }; return xhrOpen.call(this, method, url, ...rest); };
+  XMLHttpRequest.prototype.send = function (body) { note(() => this.__wl && record(this.__wl.method, this.__wl.url, body)); return xhrSend.call(this, body); };
+  if (navigator.sendBeacon) {
+    const beacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = (url, data) => { note(() => record('POST', url, data)); return beacon(url, data); };
+  }
+  // A native submit that the page did not intercept navigates away, so the click's reply would be lost with the page:
+  // push what we saw over the link now, before unload. A page that calls preventDefault and fetches is seen through fetch.
+  let pushObserved = () => {};
+  window.addEventListener('submit', (ev) => {
+    if (!watching || ev.defaultPrevented) return;
+    note(() => {
+      const f = ev.target;
+      const method = (ev.submitter?.getAttribute('formmethod') || f.getAttribute('method') || 'GET').toUpperCase();
+      if (SAFE.has(method)) return;
+      const action = ev.submitter?.getAttribute('formaction') || f.getAttribute('action') || location.href;
+      const u = new URL(action, location.href);
+      const eff = { method, origin: u.origin, path: u.pathname, body_hash: null };
+      watching.push(Promise.resolve(eff));
+      pushObserved([eff]);
+    });
+  });
+  async function watchWhile(fn) {
+    watching = [];
+    try { return { value: await fn(), effects: await Promise.all(watching) }; } finally { watching = null; }
+  }
 
   async function settle(maxMs = 3000) {
     const t0 = Date.now();
@@ -73,7 +141,8 @@
     const marked = el.closest('[data-wl-effect]');
     let effect = 'reversible';
     if (marked) { const v = marked.getAttribute('data-wl-effect'); effect = EFFECTS.includes(v) ? v : 'irreversible'; }
-    const out = { effect, tag: el.tagName.toLowerCase(), label: (el.textContent || el.value || el.getAttribute('aria-label') || el.id || '').trim().slice(0, 80) };
+    // declared: what the page wrote (null = no annotation at all), so an unannotated click is distinguishable from an explicit reversible one
+    const out = { effect, declared: marked ? marked.getAttribute('data-wl-effect') : null, tag: el.tagName.toLowerCase(), label: (el.textContent || el.value || el.getAttribute('aria-label') || el.id || '').trim().slice(0, 80) };
     if (marked && marked.hasAttribute('data-wl-preview')) {
       const sel = marked.getAttribute('data-wl-preview');
       out.preview = collect(sel ? document.querySelector(sel) : marked.closest('form'));
@@ -199,10 +268,9 @@
       const el = resolve(selector, nth);
       if (el.disabled) throw new Error(`${selector} is disabled`);
       const before = location.pathname + location.hash;
-      el.click();
-      await settle();
+      const { effects } = await watchWhile(async () => { el.click(); await settle(); });
       const after = location.pathname + location.hash;
-      return { clicked: true, tag: el.tagName.toLowerCase(), pathBefore: before, path: after, navigated: after !== before };
+      return { clicked: true, tag: el.tagName.toLowerCase(), pathBefore: before, path: after, navigated: after !== before, observed_effects: effects };
     },
     'dom.fill': async ({ selector, nth, value }) => {
       const el = resolve(selector, nth);
@@ -224,8 +292,8 @@
   // ---- connection ----
   let backoff = 500;
   function connect() {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/agent?name=${encodeURIComponent(NAME)}&loadId=${LOAD_ID}&origin=${encodeURIComponent(location.origin)}&adapter=${ADAPTER ? 1 : 0}`);
-    ws.onopen = () => { backoff = 500; };
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/agent?name=${encodeURIComponent(NAME)}&loadId=${LOAD_ID}&origin=${encodeURIComponent(location.origin)}&adapter=${ADAPTER ? 1 : 0}&token=${encodeURIComponent(TOKEN)}`);
+    ws.onopen = () => { backoff = 500; pushObserved = (effects) => { try { ws.send(JSON.stringify({ kind: 'observed', effects })); } catch { /* link down */ } }; };
     ws.onmessage = async (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
@@ -243,5 +311,10 @@
     ws.onclose = () => { setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 8000); };
     ws.onerror = () => { try { ws.close(); } catch { /* already closed */ } };
   }
-  connect();
+  // Announce the page only once it has loaded and its own startup fetches have settled: a caller that waits for the agent
+  // (a restore-and-reload in a fork, a fresh session) then reads a rendered page, not a half-built one.
+  // A page whose load event never comes (a hung image) still connects after 5s.
+  let started = false;
+  const start = () => { if (started) return; started = true; settle().then(connect); };
+  if (document.readyState === 'complete') start(); else { window.addEventListener('load', start, { once: true }); setTimeout(start, 5000); }
 })();

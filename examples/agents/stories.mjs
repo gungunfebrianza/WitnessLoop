@@ -174,4 +174,34 @@ export const todo = {
   },
 };
 
-export const stories = { bank, mailer, todo };
+// ---------------------------------------------------------------------------- shop
+// The page's Pay button has no data-wl-effect, so the gate treats it as reversible and asks nobody. The story shows what
+// witnessloop can and cannot do about that: it cannot stop the click, it can see the write and say so afterwards.
+export const shop = {
+  async agent(client) {
+    const sid = await client.startSession({ goal: 'Buy the annual plan', actor: 'shop-agent' });
+    await client.cmd('dom.query', { selector: '#balance' }, { actor: 'shop-agent' });
+    const paid = await client.cmd('dom.click', { selector: '#pay' }, { actor: 'shop-agent' });
+    await client.endSession(sid);
+    return { sid, paid };
+  },
+
+  async story(stage, say = noop) {
+    const { client } = stage;
+    say("1. An agent buys a plan. The page's Pay button carries no data-wl-effect, so the gate sees a reversible click and asks nobody.");
+    const { sid, paid } = await shop.agent(client);
+    const events = await client.events(sid);
+    const intents = events.filter((e) => e.kind === 'intent').length;
+    const world = await stage.world('default');
+    say(`2. The click ran (ok=${paid.ok}); intents recorded: ${intents}; the wallet is now ${world.server.balance} cents. Nothing was prevented.`);
+    const flags = events.filter((e) => e.kind === 'flag');
+    say(`3. Live, after dispatch: ${flags.length} flag - ${flags[0]?.data.why}: ${(flags[0]?.data.evidence ?? []).map((x) => `${x.method} ${x.path}`).join(', ')} (page declared: ${flags[0]?.data.declared ?? 'nothing'}).`);
+    const detected = await client.detect(sid);
+    say(`4. Offline, from the recorded checkpoints: ${detected.detections.map((d) => d.kind).join(' + ')}. ${detected.note}`);
+    const proof = await tamperCheck(client, sid);
+    say(`5. bundle verifies offline: ${proof.okBefore}; tamper caught: ${proof.tamperDetected}.`);
+    return { sid, paid, intents, flags, detected, balance: world.server.balance, proof };
+  },
+};
+
+export const stories = { bank, mailer, todo, shop };

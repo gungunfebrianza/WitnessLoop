@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ledger } from './ledger.mjs';
-import { loadOrCreateKey, generateKey } from './attest.mjs';
+import { loadOrCreateKey, generateKey, saveKey, fingerprint } from './attest.mjs';
+import { newToken, tokenMatches, bearerOf, writeTokenFile, DEFAULT_TOKEN_FILE } from './auth.mjs';
 import { acceptWebSocket } from './ws.mjs';
 import { COMMANDS, classify, timeoutFor } from './registry.mjs';
 import { validatePolicy, DEFAULT_POLICY } from './policy.mjs';
@@ -18,18 +19,25 @@ import { installDashboardRoutes } from './dashboard.mjs';
 export const DEFAULT_PORT = 8974;
 const DASHBOARD_HTML = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dashboard', 'index.html');
 
+// What the page's observer reported is untrusted input: keep only the four expected fields, bounded, so a page cannot
+// stuff arbitrary data (or credentials it chose to include) into the ledger through this channel.
+const clip = (v) => (typeof v === 'string' ? v.slice(0, 200) : null);
+export const cleanEffects = (list) => (Array.isArray(list) ? list.slice(0, 50).filter((x) => x && typeof x === 'object').map((x) => ({ method: clip(x.method)?.toUpperCase() ?? null, origin: clip(x.origin), path: clip(x.path), body_hash: clip(x.body_hash) })) : []);
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 export class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
 }
 
 export async function createRelay({
   dbPath = ':memory:', keyPath = null, port = DEFAULT_PORT, host = '127.0.0.1', policy = null, profile = {},
-  approvalTimeoutMs = 300000, checkpoints = 'mutating', now,
+  approvalTimeoutMs = 300000, checkpoints = 'mutating', now, anchorSink = null, approvers = [], allowUnsignedApprovals = false, token = newToken(),
 } = {}) {
+  if (!token) throw new Error('createRelay needs a token: an unauthenticated relay is not an option');
   const key = keyPath ? loadOrCreateKey(keyPath) : generateKey();
   if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
   const ledger = new Ledger(dbPath, { key, ...(now ? { now } : {}) });
-  const approvals = new Approvals({ timeoutMs: approvalTimeoutMs });
+  const approvals = new Approvals({ timeoutMs: approvalTimeoutMs, approvers, allowUnsigned: allowUnsignedApprovals });
   const agents = new Map();
   const pending = new Map();
   let nextId = 0;
@@ -56,6 +64,11 @@ export async function createRelay({
   function handleAgentMessage(conn, text) {
     let msg;
     try { msg = JSON.parse(text); } catch { return; }
+    if (msg.kind === 'observed') {
+      // a native form submit is about to unload the page: keep what was seen in case the click's reply never arrives
+      for (const p of pending.values()) if (p.conn === conn && p.type === 'dom.click') p.observed = [...(p.observed ?? []), ...cleanEffects(msg.effects)].slice(0, 50);
+      return;
+    }
     if (msg.kind !== 'reply') return;
     const p = pending.get(msg.id);
     if (!p || p.conn !== conn) return;
@@ -130,14 +143,30 @@ export async function createRelay({
       if (profile.effectCheck) before = await captureWorld(bridge, agent);
     }
 
+    // Write-ahead: the begin is on the ledger before the click. If the result cannot be recorded later,
+    // verify reports this begin as an unresolved dispatch. If the begin itself cannot be recorded, nothing is dispatched.
+    const begin = effect === 'irreversible' ? ledger.append(sessionId, { kind: 'command.begin', actor, type, effect, data: { params, intent_idx: intentIdx } }) : null;
     const t0 = Date.now();
     let result;
     let error;
-    try { result = await dispatch(agent, type, params); } catch (e) { error = e.message; }
+    let lost = null;
+    try { result = await dispatch(agent, type, params); } catch (e) { error = e.message; lost = e.observed ?? null; }
+    // writes the click made on the network, as the page's observer saw them (a click whose reply was lost keeps what was pushed before the page went)
+    const observed = cleanEffects(result?.observed_effects ?? lost);
+    if (result && typeof result === 'object' && 'observed_effects' in result) result = { ...result, observed_effects: observed };
     const cmd = ledger.append(sessionId, {
       kind: 'command', actor, type, effect, ok: !error,
-      data: { params, ...(describe ? { describe } : {}), ...(intentIdx !== null ? { intent_idx: intentIdx } : {}), result, error, ms: Date.now() - t0 },
+      data: { params, ...(describe ? { describe } : {}), ...(intentIdx !== null ? { intent_idx: intentIdx } : {}), ...(begin ? { begin_idx: begin.idx } : {}), result, error, ...(lost?.length ? { observed_effects: observed } : {}), ms: Date.now() - t0 },
     });
+
+    // Detection after the fact: the request has already gone. A write under a reversible or unannotated label is what the gate could not see.
+    if (effect !== 'irreversible' && type === 'dom.click') {
+      // an entry with no readable method counts as a write: when in doubt, flag
+      const writes = observed.filter((x) => !SAFE_METHODS.has(x.method));
+      if (writes.length) {
+        ledger.append(sessionId, { kind: 'flag', actor: 'relay', type: 'undeclared_effect', ok: false, data: { command_idx: cmd.idx, intent_idx: null, why: 'undeclared network effect', declared: describe?.declared ?? null, evidence: writes } });
+      }
+    }
 
     let after = null;
     const wantsCheckpoint = effect !== 'read' && (checkpoints === 'mutating' || (checkpoints === 'irreversible' && effect === 'irreversible'));
@@ -161,7 +190,7 @@ export async function createRelay({
   }
 
   const api = {
-    ledger, approvals, profile, bridge, volatileKeys, agents,
+    ledger, approvals, profile, bridge, volatileKeys, agents, token,
     dispatch, agentInfo, waitForReconnect, checkpoint, startSession, endSession, runCommand,
     httpError: (status, message) => new HttpError(status, message),
     getPolicy: () => currentPolicy,
@@ -181,11 +210,16 @@ export async function createRelay({
 
   route('POST', '/sessions', async ({ body }) => ({ id: await startSession(body ?? {}) }));
   route('GET', '/sessions', () => ledger.listSessions());
-  route('POST', '/sessions/:id/end', ({ params, body }) => {
+  route('POST', '/sessions/:id/end', async ({ params, body }) => {
     const s = ledger.getSession(params.id);
     if (!s) throw new HttpError(404, `no such session ${params.id}`);
     if (s.status !== 'active') throw new HttpError(409, `session ${params.id} already ended`);
-    return endSession(Number(params.id), body?.summary ?? {});
+    const e = endSession(Number(params.id), body?.summary ?? {});
+    // the final seal is anchored as the session closes; the session is already sealed if the sink fails, and the caller is told
+    if (anchorSink) {
+      try { const rec = ledger.anchorRecord(Number(params.id)); await anchorSink({ session: rec.session, head_hash: rec.head_hash, seal: rec.seal }); } catch (err) { throw new HttpError(502, `session ended but the anchor sink failed: ${err.message}`); }
+    }
+    return e;
   });
   route('GET', '/sessions/:id/events', ({ params, query }) => {
     if (!ledger.getSession(params.id)) throw new HttpError(404, `no such session ${params.id}`);
@@ -202,11 +236,13 @@ export async function createRelay({
 
   route('GET', '/gate/pending', () => approvals.list());
   route('POST', '/gate/:id/approve', ({ params, body }) => {
-    if (!approvals.resolve(params.id, true, body?.by ?? 'human', body?.reason ?? null)) throw new HttpError(404, `no pending intent ${params.id}`);
+    const r = approvals.decide(params.id, true, body ?? {});
+    if (!r.ok) throw new HttpError(r.status, r.error);
     return { approved: params.id };
   });
   route('POST', '/gate/:id/deny', ({ params, body }) => {
-    if (!approvals.resolve(params.id, false, body?.by ?? 'human', body?.reason ?? null)) throw new HttpError(404, `no pending intent ${params.id}`);
+    const r = approvals.decide(params.id, false, body ?? {});
+    if (!r.ok) throw new HttpError(r.status, r.error);
     return { denied: params.id };
   });
 
@@ -221,6 +257,34 @@ export async function createRelay({
   route('GET', '/sessions/:id/verify', ({ params, query }) => {
     if (!ledger.getSession(params.id)) throw new HttpError(404, `no such session ${params.id}`);
     return ledger.verifySessionId(Number(params.id), { strict: query.get('strict') === '1' });
+  });
+  // Key lifecycle. The new key is written to disk BEFORE the ledger switches to it, and the old file is put back if the
+  // switch fails, so a restart never ends up with a key file that disagrees with what the ledger last signed with.
+  route('POST', '/key/rotate', () => {
+    const previous = ledger.key;
+    const next = generateKey();
+    if (keyPath) saveKey(keyPath, next);
+    let cert;
+    try { cert = ledger.rotateKey(next); } catch (e) { if (keyPath) saveKey(keyPath, previous); throw new HttpError(409, e.message); }
+    return { cert, fingerprint: fingerprint(next.publicKey), previous: fingerprint(previous.publicKey) };
+  });
+  route('POST', '/key/revoke', ({ body }) => {
+    if (typeof body?.fingerprint !== 'string' || !/^[0-9a-f]{16}$/.test(body.fingerprint)) throw new HttpError(400, 'body.fingerprint must be a 16-hex key fingerprint');
+    try { return ledger.revokeKey(body.fingerprint); } catch (e) { throw new HttpError(409, e.message); }
+  });
+  route('POST', '/sessions/:id/verify', ({ params, body }) => {
+    if (!ledger.getSession(params.id)) throw new HttpError(404, `no such session ${params.id}`);
+    return ledger.verifySessionId(Number(params.id), { strict: !!body?.strict, trustedKey: body?.trustedKey ?? null, trustedKeys: body?.trustedKeys ?? null, trustedApprovers: body?.trustedApprovers ?? null, anchors: body?.anchors ?? null });
+  });
+  // Returns the record to copy outside the ledger; also hands it to the relay's own sink when one is configured.
+  route('POST', '/sessions/:id/anchor', async ({ params }) => {
+    if (!ledger.getSession(params.id)) throw new HttpError(404, `no such session ${params.id}`);
+    let rec;
+    try { rec = ledger.anchorRecord(Number(params.id)); } catch (e) { throw new HttpError(409, e.message); }
+    if (anchorSink) {
+      try { await anchorSink({ session: rec.session, head_hash: rec.head_hash, seal: rec.seal }); } catch (e) { throw new HttpError(502, `anchor sink failed: ${e.message}`); }
+    }
+    return { ...rec, sunk: !!anchorSink };
   });
   route('GET', '/sessions/:id/bundle', ({ params }) => {
     if (!ledger.getSession(params.id)) throw new HttpError(404, `no such session ${params.id}`);
@@ -252,6 +316,8 @@ export async function createRelay({
       return;
     }
     try {
+      // every route, including /health, needs the token; only the static dashboard page above is open (it carries no data)
+      if (!tokenMatches(token, bearerOf(req.headers.authorization))) throw new HttpError(401, 'missing or invalid relay token (Authorization: Bearer <token>)');
       const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
       if (!r) throw new HttpError(404, `no route ${req.method} ${url.pathname}`);
       const params = url.pathname.match(r.re).groups ?? {};
@@ -266,6 +332,9 @@ export async function createRelay({
   server.on('upgrade', (req, socket) => {
     const url = new URL(req.url, 'http://x');
     if (url.pathname !== '/agent') { socket.destroy(); return; }
+    // a browser WebSocket cannot set headers, so the agent presents the token in the query string; checked before the
+    // handshake completes, so an unauthenticated socket never registers and never replaces a connected agent
+    if (!tokenMatches(token, url.searchParams.get('token'))) { socket.end('HTTP/1.1 401 Unauthorized\r\nconnection: close\r\n\r\n'); return; }
     const name = url.searchParams.get('name') || 'default';
     const entry = {
       loadId: url.searchParams.get('loadId') || String(Date.now()), origin: url.searchParams.get('origin') || '',
@@ -275,7 +344,7 @@ export async function createRelay({
       onMessage: (text) => handleAgentMessage(conn, text),
       onClose: () => {
         if (agents.get(name)?.conn === conn) agents.delete(name);
-        for (const [id, p] of pending) if (p.conn === conn) { clearTimeout(p.timer); pending.delete(id); p.reject(new HttpError(409, 'agent disconnected')); }
+        for (const [id, p] of pending) if (p.conn === conn) { clearTimeout(p.timer); pending.delete(id); p.reject(Object.assign(new HttpError(409, 'agent disconnected'), { observed: p.observed })); }
       },
     });
     if (!conn) return;
@@ -292,7 +361,7 @@ export async function createRelay({
     server.listen(port, host, () => { api.port = server.address().port; resolve(api); });
   });
   api.close = async () => {
-    approvals.list().forEach((p) => approvals.resolve(p.id, false, 'shutdown', 'relay closing'));
+    approvals.list().forEach((p) => approvals.system(p.id, 'shutdown', 'relay closing'));
     for (const a of agents.values()) a.conn.close();
     await new Promise((r) => { server.close(() => r()); server.closeAllConnections?.(); });
     ledger.close();
@@ -303,6 +372,7 @@ export async function createRelay({
 // `node src/relay.mjs` starts a relay with env-configured defaults; the CLI's `serve` is the real entry.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const relay = await createRelay({ dbPath: process.env.WITNESSLOOP_DB ?? '.witnessloop/ledger.db', keyPath: process.env.WITNESSLOOP_KEY ?? '.witnessloop/key.json', port: Number(process.env.WITNESSLOOP_PORT) || DEFAULT_PORT });
+  writeTokenFile(process.env.WITNESSLOOP_TOKEN_FILE ?? DEFAULT_TOKEN_FILE, relay.token);
   await relay.listen();
   console.log(`witnessloop relay on http://127.0.0.1:${relay.port}`);
 }

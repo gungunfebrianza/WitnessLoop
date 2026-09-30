@@ -55,8 +55,14 @@ const setKids = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filte
 const NS = 'http://www.w3.org/2000/svg';
 const s = (tag, attrs, ...kids) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v); for (const kid of kids.flat(Infinity)) if (kid != null) e.append(kid.nodeType ? kid : document.createTextNode(String(kid))); return e; };
 const J = (v) => JSON.stringify(v);
+// The relay token arrives in the URL fragment (never sent over the wire). Keep it in memory, and in sessionStorage so a reload
+// still works, then clear the fragment so it is not left in the address bar or history.
+let TOKEN = '';
+try { TOKEN = new URLSearchParams(location.hash.slice(1)).get('token') || sessionStorage.getItem('wl_token') || ''; if (TOKEN) sessionStorage.setItem('wl_token', TOKEN); } catch { /* storage may be blocked; the in-memory token still works for this load */ }
+if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 const api = async (path, body) => {
-  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: J(body) });
+  const headers = { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(TOKEN ? { authorization: 'Bearer ' + TOKEN } : {}) };
+  const r = await fetch(path, body === undefined ? { headers } : { method: 'POST', headers, body: J(body) });
   const j = await r.json();
   if (!j.ok) throw new Error(j.error);
   return j.result;
@@ -73,7 +79,7 @@ const table = (head, rows) => h('table', null, h('tr', null, head.map((x) => h('
 let state = { overview: null, sid: null, detail: null, tab: 'integrity' };
 
 async function boot() {
-  try { state.overview = await api('/dashboard/overview'); } catch (e) { setKids(document.getElementById('main'), h('div', { class: 'card' }, 'cannot load: ' + e.message)); return; }
+  try { state.overview = await api('/dashboard/overview'); } catch (e) { setKids(document.getElementById('main'), h('div', { class: 'card' }, 'cannot load: ' + e.message + (TOKEN ? '' : ' (open the dashboard with the URL that witnessloop serve printed: it carries the relay token)'))); return; }
   document.getElementById('stamp').textContent = 'loaded ' + new Date().toLocaleTimeString();
   drawNav(); if (state.sid == null) { drawFleet(); } else { await open(state.sid); }
 }
@@ -174,7 +180,7 @@ function vIntegrity(d) {
         ['session ended', i.ended ? 'yes' : 'no'],
         ['signer fingerprint(s)', i.signers.join(', ') || 'none']]),
       i.problems.length ? table(['event', 'problem'], i.problems.map((p) => ['#' + p.idx, p.reason])) : null,
-      h('p', { class: 'note' }, 'Trust in the signer is not checked here: pin a key with verify --trusted-key. External anchoring of seal hashes is not built, so this view cannot detect a full rewrite by the key holder.')),
+      h('p', { class: 'note' }, 'Trust in the signer is not checked here: pin a key with verify --trusted-key. Seal hashes can be anchored outside the ledger (witnessloop anchor) and checked with verify --anchor, but this view does not check anchors, so it cannot by itself detect a full rewrite by the key holder.')),
     card('Tamper demonstration', h('p', { class: 'note' }, 'Damages an in-memory copy of this session\'s bundle and runs the real verifier on it. The stored ledger is never modified.'),
       h('p', null, h('button', { class: 'a', onclick: () => run('payload') }, 'Flip one payload byte'), ' ', h('button', { class: 'a', onclick: () => run('delete') }, 'Delete a middle event'), ' ', h('button', { class: 'a', onclick: () => run('truncate') }, 'Truncate the tail')), out));
   return box;
@@ -182,7 +188,7 @@ function vIntegrity(d) {
 
 // timeline: one lane per kind, x = event index
 function vTimeline(d) {
-  const lanes = ['session.start', 'command', 'intent', 'decision', 'flag', 'checkpoint', 'session.end']; const lane = (k) => { const i = lanes.indexOf(k); return i < 0 ? lanes.length : i; };
+  const lanes = ['session.start', 'command', 'command.begin', 'intent', 'decision', 'flag', 'checkpoint', 'session.end']; const lane = (k) => { const i = lanes.indexOf(k); return i < 0 ? lanes.length : i; };
   const n = d.timeline.length; const W = 1000; const LH = 26; const H = LH * (lanes.length + 1) + 20; const X = (i) => 90 + (i / Math.max(1, n - 1)) * (W - 110);
   const info = h('pre', null, 'click an event');
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}` });
@@ -206,7 +212,7 @@ function vGate(d) {
     card('Decision funnel', bars([['intents recorded', f.intents], ['policy: allow', f.policyAllow, 'ok'], ['policy: deny', f.policyDeny, 'bad'], ['policy: needs approval', f.policyAsk, 'warn'], ['human: allow', f.humanAllow, 'ok'], ['human: deny', f.humanDeny, 'bad'], ['approval timed out (= deny)', f.timeout, 'bad'], ['released to the page', f.released, 'ok'], ['refused, nothing dispatched', f.refused, 'bad']]),
       h('p', { class: 'note' }, 'If almost everything needs approval the policy is weak; if almost everything is allowed by policy it may be too loose.')),
     card('Approval latency', lat.length ? [bars(buckets), h('p', { class: 'note' }, 'median ' + lat[lat.length >> 1] + ' ms over ' + lat.length + ' approval(s). Timeouts are included and count as denials.')] : 'no approvals in this session'),
-    card('Intents', d.gate.intents.length ? table(['event', 'what the page said would happen', 'policy', 'rule', 'final', 'by', '#wait ms'], d.gate.intents.map((r) => ['#' + r.idx, J(r.preview ?? r.params), r.verdict, r.rule === null ? 'default' : '#' + r.rule + ' ' + (r.reason || ''), r.final, r.by, r.latencyMs ?? ''])) : 'no irreversible intents'),
+    card('Intents', d.gate.intents.length ? table(['event', 'what the page said would happen', 'policy', 'rule', 'final', 'by (label)', 'approver key', '#wait ms'], d.gate.intents.map((r) => ['#' + r.idx, J(r.preview ?? r.params), r.verdict, r.rule === null ? 'default' : '#' + r.rule + ' ' + (r.reason || ''), r.final, r.by, r.approver ?? (r.by && r.by !== 'policy' ? 'none (unsigned)' : ''), r.latencyMs ?? ''])) : 'no irreversible intents'),
     card('Repeated intents', d.repeats.length ? table(['events', 'params'], d.repeats.map((r) => [r.intents.map((x) => '#' + x).join(', '), J(r.preview ?? r.params)])) : 'none', h('p', { class: 'note' }, 'Identical intents attempted more than once, including after a denial.')));
 }
 

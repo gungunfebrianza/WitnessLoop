@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tiny Shop</title>
+<meta name="witness-adapter" content="1">
+<style>
+  body { font: 16px system-ui, sans-serif; max-width: 520px; margin: 2rem auto; padding: 0 1rem; color: #1b1f24; }
+  button { font: inherit; padding: .5rem 1rem; }
+  #status { min-height: 1.5em; color: #0a5; } #status.err { color: #b00; }
+</style>
+</head>
+<body>
+<h1>Tiny Shop <small>wallet <span id="balance"></span></small></h1>
+<p>Annual plan: $49.00</p>
+<!-- No data-wl-effect here. This button charges the card, but the page never says so: the gate sees a reversible click. -->
+<button id="pay" type="button">Pay</button>
+<p id="status" role="status"></p>
+<script src="/witnessloop/inject.js"></script>
+<script>
+  const fmt = (c) => (c / 100).toFixed(2);
+  async function load() {
+    const s = await (await fetch('/api/state')).json();
+    document.getElementById('balance').textContent = '$' + fmt(s.balance);
+  }
+  document.getElementById('pay').addEventListener('click', async () => {
+    const res = await fetch('/api/pay', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item: 'Annual plan', cents: 4900 }) });
+    const r = await res.json();
+    const status = document.getElementById('status');
+    status.className = r.ok ? '' : 'err';
+    status.textContent = r.ok ? `Paid $${fmt(r.order.cents)}` : `Error: ${r.error}`;
+    await load();
+  });
+  load();
+</script>
+</body>
+</html>

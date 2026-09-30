@@ -2,41 +2,53 @@
 const cell = (v) => String(v ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').slice(0, 90);
 const short = (v) => cell(typeof v === 'string' ? v : JSON.stringify(v));
 
-export function buildReport({ session, events, verify, causal, children = [] }) {
+export function buildReport({ session, events, verify, causal, detections = null, children = [] }) {
   const L = [];
   const start = events[0]?.data ?? {};
   L.push(`# witnessloop report - session ${session.id}`, '');
   L.push(`- goal: ${start.goal || '(none)'}`, `- actor: ${session.actor}   agent: ${session.agent}   status: ${session.status}`);
   if (session.parent_session) L.push(`- fork of session ${session.parent_session}`);
+  (verify.warnings ?? []).forEach((w) => L.push(`- warning at #${w.idx}: ${w.reason}`));
   L.push(`- chain: ${verify.ok ? `verified (${verify.checked} events, sealed through #${verify.sealedThrough}, signer ${verify.signers.join(', ') || 'none'})` : `BROKEN at event #${verify.badIdx}: ${verify.problems[0]?.reason}`}`, '');
 
   const commands = events.filter((e) => e.kind === 'command');
   const intents = events.filter((e) => e.kind === 'intent');
   const flags = events.filter((e) => e.kind === 'flag');
-  const ran = new Set(commands.map((c) => c.data.intent_idx).filter((x) => x !== undefined));
+  const begins = events.filter((e) => e.kind === 'command.begin');
+  const resolvedBegins = new Set(commands.map((c) => c.data.begin_idx).filter((x) => x !== undefined));
+  const unresolved = begins.filter((b) => !resolvedBegins.has(b.idx));
+  const ran = new Set([...commands, ...begins].map((c) => c.data.intent_idx).filter((x) => x !== undefined && x !== null));
   L.push('## Summary', '');
   L.push(`- commands executed: ${commands.length} (${commands.filter((c) => !c.ok).length} failed)`);
   L.push(`- irreversible intents: ${intents.length} (released ${intents.filter((i) => ran.has(i.idx)).length}, refused ${intents.filter((i) => !ran.has(i.idx)).length})`);
+  if (unresolved.length) L.push(`- UNRESOLVED DISPATCHES: ${unresolved.length} (${unresolved.map((b) => `#${b.idx} intent #${b.data.intent_idx}`).join(', ')}) - released and sent to the page, but no result was recorded`);
   L.push(`- effect mismatches flagged: ${flags.length}`, `- checkpoints: ${events.filter((e) => e.kind === 'checkpoint').length}`, '');
 
   if (intents.length) {
     L.push('## Gate decisions', '', '| intent | command | preview | decisions | executed |', '|---|---|---|---|---|');
     for (const i of intents) {
       const ds = events.filter((e) => e.kind === 'decision' && e.data.intent_idx === i.idx);
-      L.push(`| #${i.idx} | ${cell(i.type)} | ${short(i.data.preview)} | ${ds.map((d) => `${d.data.verdict} by ${d.data.by ?? 'policy'}${d.data.reason ? ` (${cell(d.data.reason)})` : ''}`).join(' -> ')} | ${ran.has(i.idx) ? 'yes' : 'NO'} |`);
+      L.push(`| #${i.idx} | ${cell(i.type)} | ${short(i.data.preview)} | ${ds.map((d) => `${d.data.verdict} by ${d.data.by ?? 'policy'}${d.data.approver_fp ? ` [key ${d.data.approver_fp}]` : ''}${d.data.reason ? ` (${cell(d.data.reason)})` : ''}`).join(' -> ')} | ${ran.has(i.idx) ? 'yes' : 'NO'} |`);
     }
     L.push('');
   }
   if (flags.length) {
     L.push('## Flags', '');
-    for (const f of flags) L.push(`- #${f.idx} ${f.type}: command #${f.data.command_idx} - ${f.data.why}`);
+    for (const f of flags) L.push(`- #${f.idx} ${f.type}: command #${f.data.command_idx} - ${f.data.why}${f.type === 'undeclared_effect' ? ` (${(f.data.evidence ?? []).map((x) => `${x.method} ${x.path}`).join(', ')}; page declared: ${f.data.declared ?? 'nothing'})` : ''}`);
+    L.push('');
+  }
+  if (detections) {
+    L.push('## Detected after the fact', '', `${detections.note}`, '');
+    if (!detections.detections.length) L.push(`- no reversible click looked external (${detections.checked} checked, ${detections.skipped.length} could not be checked)`);
+    for (const d of detections.detections) L.push(`- click #${d.command_idx} ${short(d.params)} was reversible to the gate but ${d.kind === 'observed_request' ? `made ${d.evidence.map((x) => `${x.method} ${x.path}`).join(', ')}` : `changed server state (${d.paths.slice(0, 5).join(', ')})`}${d.also_flagged_live ? '; already flagged live' : ''} *(heuristic)*`);
+    if (detections.skipped.length) L.push(`- not checkable: ${detections.skipped.map((s) => `#${s.command_idx} (${s.reason})`).join(', ')}`);
     L.push('');
   }
 
   L.push('## Timeline', '', '| # | kind | type | effect | ok | note |', '|---|---|---|---|---|---|');
   for (const e of events.slice(0, 300)) {
     const d = e.data ?? {};
-    const note = e.kind === 'command' ? short(d.params) : e.kind === 'checkpoint' ? `${d.label} ${String(d.state_hash).slice(0, 8)}` : e.kind === 'decision' ? d.verdict : e.kind === 'intent' ? short(d.preview) : '';
+    const note = e.kind === 'command' || e.kind === 'command.begin' ? short(d.params) : e.kind === 'checkpoint' ? `${d.label} ${String(d.state_hash).slice(0, 8)}` : e.kind === 'decision' ? d.verdict : e.kind === 'intent' ? short(d.preview) : '';
     L.push(`| ${e.idx} | ${e.kind} | ${cell(e.type)} | ${cell(e.effect)} | ${e.ok === null ? '' : e.ok ? 'y' : 'n'} | ${note} |`);
   }
   if (events.length > 300) L.push(`| ... | ${events.length - 300} more events | | | | |`);

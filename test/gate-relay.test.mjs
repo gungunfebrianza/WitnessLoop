@@ -59,12 +59,14 @@ test('irreversible click: intent and decision are on the ledger BEFORE the comma
     const ev = await client.events(sid);
     const seq = kinds(ev);
     const i = seq.indexOf('intent');
-    assert.deepEqual(seq.slice(i, i + 5), ['intent', 'decision', 'decision', 'command', 'checkpoint']);
+    assert.deepEqual(seq.slice(i, i + 6), ['intent', 'decision', 'decision', 'command.begin', 'command', 'checkpoint']);
     assert.equal(ev[i + 1].data.verdict, 'require_approval');
     assert.equal(ev[i + 2].data.by, 'reviewer-1');
     assert.equal(ev[i + 2].data.verdict, 'allow');
-    assert.ok(ev[i + 2].idx < ev[i + 3].idx, 'decision precedes command');
+    assert.ok(ev[i + 2].idx < ev[i + 3].idx, 'decision precedes the write-ahead begin');
     assert.equal(ev[i + 3].data.intent_idx, ev[i].idx);
+    assert.equal(ev[i + 4].data.begin_idx, ev[i + 3].idx, 'the result references its begin');
+    assert.equal(ev[i + 4].data.intent_idx, ev[i].idx);
     await client.endSession(sid);
     assert.ok((await client.verify(sid, true)).ok);
   });
@@ -164,4 +166,43 @@ test('effectCheck flags an effect the preview did not promise, on the ledger', a
     assert.equal(flag.data.command_idx, out.idx);
     await client.endSession(sid);
   }, { policy: { default: 'allow' }, profile });
+});
+
+test('write-ahead: a result that cannot be recorded leaves an unresolved dispatch that verify reports', async () => {
+  await withBank(async ({ client, relay, bank }) => {
+    const sid = await client.startSession({});
+    const real = relay.ledger.append.bind(relay.ledger);
+    relay.ledger.append = (id, e) => { if (e.kind === 'command' && e.type === 'dom.click') throw new Error('disk full'); return real(id, e); };
+    await client.cmd('dom.fill', { selector: '#to', value: 'bob' });
+    await client.cmd('dom.fill', { selector: '#amount', value: '5' });
+    await assert.rejects(client.cmd('dom.click', { selector: '#send' }), /disk full/);
+    relay.ledger.append = real;
+    assert.ok(bank.agent.seen.some((m) => m.type === 'dom.click'), 'the click really reached the page');
+    const begin = relay.ledger.events(sid).find((e) => e.kind === 'command.begin');
+    assert.ok(begin, 'the begin was recorded before the click');
+    const soft = await client.verify(sid, false);
+    assert.equal(soft.ok, true);
+    assert.equal(soft.warnings.length, 1);
+    assert.match(soft.warnings[0].reason, /unresolved dispatch/);
+    assert.equal(soft.warnings[0].idx, begin.idx);
+    const hard = await client.verify(sid, true);
+    assert.equal(hard.ok, false);
+    assert.ok(hard.problems.some((p) => p.idx === begin.idx && /unresolved dispatch/.test(p.reason)));
+    const report = (await client.report(sid)).markdown;
+    assert.match(report, /UNRESOLVED DISPATCHES: 1/);
+    await client.endSession(sid);
+  }, { policy: { default: 'allow' } });
+});
+
+test('write-ahead: if the begin cannot be recorded, nothing is dispatched', async () => {
+  await withBank(async ({ client, relay, bank }) => {
+    await client.startSession({});
+    const real = relay.ledger.append.bind(relay.ledger);
+    relay.ledger.append = (id, e) => { if (e.kind === 'command.begin') throw new Error('disk full'); return real(id, e); };
+    await client.cmd('dom.fill', { selector: '#to', value: 'bob' });
+    await client.cmd('dom.fill', { selector: '#amount', value: '5' });
+    await assert.rejects(client.cmd('dom.click', { selector: '#send' }), /disk full/);
+    relay.ledger.append = real;
+    assert.ok(!bank.agent.seen.some((m) => m.type === 'dom.click'), 'no click was dispatched');
+  }, { policy: { default: 'allow' } });
 });

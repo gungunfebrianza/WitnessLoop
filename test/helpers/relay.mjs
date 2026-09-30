@@ -1,15 +1,18 @@
 import { createRelay } from '../../src/relay.mjs';
 import { createClient } from '../../src/client.mjs';
+import { generateKey, fingerprint } from '../../src/attest.mjs';
 import { startFakeBank, bankProfile } from './fake-agent.mjs';
 
 // Runs fn with a live in-process relay + a connected fake bank agent, then cleans up.
 export async function withBank(fn, relayOpts = {}, bankOpts = {}) {
-  const relay = await createRelay({ port: 0, profile: bankProfile, approvalTimeoutMs: 5000, ...relayOpts });
+  // approvals are signed: the relay registers one approver key and the client signs with it, unless a test says otherwise
+  const approverKey = generateKey();
+  const relay = await createRelay({ port: 0, profile: bankProfile, approvalTimeoutMs: 5000, approvers: [fingerprint(approverKey.publicKey)], ...relayOpts });
   await relay.listen();
-  const client = createClient({ port: relay.port });
-  const bank = await startFakeBank(relay.port, bankOpts);
+  const client = createClient({ port: relay.port, approverKey, token: relay.token });
+  const bank = await startFakeBank(relay.port, { token: relay.token, ...bankOpts });
   try {
-    return await fn({ relay, client, bank });
+    return await fn({ relay, client, bank, approverKey });
   } finally {
     await bank.close();
     await relay.close();
@@ -19,7 +22,7 @@ export async function withBank(fn, relayOpts = {}, bankOpts = {}) {
 // Same, plus a second bank named "shadow" (a disposable copy of the app for forks / replays).
 export async function withBankPair(fn, relayOpts = {}) {
   return withBank(async (ctx) => {
-    const shadow = await startFakeBank(ctx.relay.port, { name: 'shadow' });
+    const shadow = await startFakeBank(ctx.relay.port, { name: 'shadow', token: ctx.relay.token });
     try { return await fn({ ...ctx, shadow }); } finally { await shadow.close(); }
   }, { policy: { default: 'allow' }, ...relayOpts });
 }

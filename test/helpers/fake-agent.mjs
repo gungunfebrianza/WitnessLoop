@@ -4,9 +4,9 @@ import http from 'node:http';
 import { handleWitnessRequest } from '../../src/adapter.mjs';
 import { initialState, transfer } from '../../examples/bank/model.mjs';
 
-export async function connectFakeAgent(port, handlers, { name = 'default', origin = '', adapter = false, loadId = `fake-${Math.random().toString(36).slice(2)}` } = {}) {
+export async function connectFakeAgent(port, handlers, { name = 'default', origin = '', adapter = false, token = '', loadId = `fake-${Math.random().toString(36).slice(2)}` } = {}) {
   const seen = [];
-  const url = `ws://127.0.0.1:${port}/agent?name=${encodeURIComponent(name)}&loadId=${loadId}&origin=${encodeURIComponent(origin)}&adapter=${adapter ? 1 : 0}`;
+  const url = `ws://127.0.0.1:${port}/agent?name=${encodeURIComponent(name)}&loadId=${loadId}&origin=${encodeURIComponent(origin)}&adapter=${adapter ? 1 : 0}&token=${encodeURIComponent(token)}`;
   const ws = new WebSocket(url);
   ws.onmessage = async (ev) => {
     const msg = JSON.parse(ev.data);
@@ -23,7 +23,7 @@ export async function connectFakeAgent(port, handlers, { name = 'default', origi
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('fake agent could not connect')); });
   // wait until the relay has registered it
   for (let i = 0; i < 100; i++) {
-    const h = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    const h = await (await fetch(`http://127.0.0.1:${port}/health`, { headers: { authorization: `Bearer ${token}` } })).json();
     if (h.result.agents.includes(name)) break;
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -31,7 +31,7 @@ export async function connectFakeAgent(port, handlers, { name = 'default', origi
 }
 
 // A fake bank "page + server": form fields live in page localStorage, balances on the server.
-export async function startFakeBank(relayPort, { name = 'default' } = {}) {
+export async function startFakeBank(relayPort, { name = 'default', token = '' } = {}) {
   const state = { bank: initialState(), form: { to: '', amount: '' } };
   const server = http.createServer((req, res) => {
     if (handleWitnessRequest(req, res, { getState: () => state.bank, setState: (s) => { state.bank = s; } })) return;
@@ -60,7 +60,7 @@ export async function startFakeBank(relayPort, { name = 'default' } = {}) {
     'world.capture': () => ({ url: `${origin}/`, localStorage: { form: JSON.stringify(state.form) }, indexedDB: {} }),
     'world.restore': ({ world }) => { state.form = JSON.parse(world.localStorage.form ?? '{"to":"","amount":""}'); return { restored: true }; },
   };
-  const agent = await connectFakeAgent(relayPort, handlers, { name, origin, adapter: true });
+  const agent = await connectFakeAgent(relayPort, handlers, { name, origin, adapter: true, token });
   return { state, agent, origin, close: async () => { agent.close(); await new Promise((r) => server.close(r)); server.closeAllConnections?.(); } };
 }
 

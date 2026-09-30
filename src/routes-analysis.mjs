@@ -3,6 +3,8 @@ import { buildCausal } from './causal.mjs';
 import { bisect } from './bisect.mjs';
 import { fork, replayVerify, compare } from './replay.mjs';
 import { buildReport } from './report.mjs';
+import { detectUnannotated } from './detect.mjs';
+import { validatePolicy, evaluate, lintPolicy } from './policy.mjs';
 
 export function installAnalysisRoutes({ route, api, HttpError }) {
   const need = (id) => {
@@ -42,12 +44,40 @@ export function installAnalysisRoutes({ route, api, HttpError }) {
     return compare(api, a, b);
   });
 
+  const detect = (events) => detectUnannotated({ events, getBlob: (h) => api.ledger.getBlob(h), volatileKeys: api.volatileKeys });
+  // What would this policy have decided for every irreversible intent already recorded? Read-only: nothing is appended, and
+  // the context is built exactly as gate.mjs builds it, so an answer here is the answer the gate would have given.
+  route('POST', '/sessions/:id/policy-dry-run', ({ params, body }) => {
+    const session = need(params.id);
+    let policy;
+    try { policy = validatePolicy(body?.policy ?? api.getPolicy()); } catch (e) { throw new HttpError(400, `policy is not valid: ${e.message}`); }
+    const events = api.ledger.events(params.id, { hydrate: true });
+    const rows = events.filter((e) => e.kind === 'intent').map((i) => {
+      const decisions = events.filter((e) => e.kind === 'decision' && e.data.intent_idx === i.idx);
+      const first = decisions[0]?.data ?? null;
+      const last = decisions.at(-1)?.data ?? null;
+      const would = evaluate(policy, { type: i.type, effect: i.effect, params: i.data.params, preview: i.data.preview ?? null, target: i.data.describe?.label ?? null, agent: session.agent, actor: i.actor });
+      return {
+        intent_idx: i.idx, type: i.type, preview: i.data.preview ?? null,
+        recorded: first ? { verdict: first.verdict, rule: first.rule, final: last.verdict, by: last.by ?? 'policy' } : null,
+        would: { verdict: would.verdict, rule: would.rule, reason: would.reason, ...(would.limit ? { limit: true } : {}) },
+        changed: !first || first.verdict !== would.verdict,
+      };
+    });
+    return { session: Number(params.id), intents: rows.length, changed: rows.filter((r) => r.changed).length, rows, warnings: lintPolicy(policy), note: 'Compares the policy verdict only; a human decision that followed a require_approval is not re-asked. Nothing was recorded or run.' };
+  });
+
+  route('GET', '/sessions/:id/detections', ({ params }) => {
+    need(params.id);
+    return detect(api.ledger.events(params.id, { hydrate: true }));
+  });
+
   route('GET', '/sessions/:id/report', ({ params }) => {
     const session = need(params.id);
     const events = api.ledger.events(params.id, { hydrate: true });
     return {
       markdown: buildReport({
-        session, events, verify: api.ledger.verifySessionId(Number(params.id)), causal: buildCausal(events),
+        session, events, verify: api.ledger.verifySessionId(Number(params.id)), causal: buildCausal(events), detections: detect(events),
         children: api.ledger.listSessions().filter((s) => s.parent_session === Number(params.id)).map((s) => ({ id: s.id, goal: s.goal, status: s.status })),
       }),
     };

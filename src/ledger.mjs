@@ -5,7 +5,7 @@
 // pure function so an exported bundle verifies offline with no database.
 import { DatabaseSync } from 'node:sqlite';
 import { canon, sha256 } from './canon.mjs';
-import { signMessage, verifySignature, fingerprint } from './attest.mjs';
+import { signMessage, verifySignature, fingerprint, keyCert, verifyCert, makeRevocation, verifyRevocation, approvalMessage } from './attest.mjs';
 
 export const GENESIS = '0'.repeat(64);
 export const BUNDLE_FORMAT = 'witnessloop.bundle/1';
@@ -19,13 +19,20 @@ export function eventBody(e) {
   };
 }
 export const eventHash = (prev, e) => sha256(prev + '\n' + canon(eventBody(e)));
+const safeParse = (s) => { try { return JSON.parse(s); } catch { return null; } };
 export const sealMessage = (s) => canon({ session_id: s.session_id, head_idx: s.head_idx, head_hash: s.head_hash, ts: s.ts });
 
 // Pure verification. events: ordered rows of one session. blobs: {hash: canonicalJsonString}.
-export function verifySession({ events, blobs = {}, seals = [], strict = false, trustedKey = null }) {
+export function verifySession({ events, blobs = {}, seals = [], strict = false, trustedKey = null, trustedKeys = null, trustedApprovers = null, rotations = [], anchors = null }) {
   const problems = [];
+  const warnings = [];
   const fail = (idx, reason) => problems.push({ idx, reason });
   let prev = GENESIS;
+  const decisions = []; // second (human) decisions, for --trusted-approver
+  const chainCerts = []; // key.rotate events: the old key vouches for the new one
+  const chainRevokes = []; // key.revoke events
+  const begun = new Map(); // command.begin idx -> intent idx; a released irreversible dispatch must get a result
+  const resolved = new Set();
   events.forEach((e, i) => {
     if (e.idx !== i) fail(i, `gap or reorder: expected idx ${i}, found ${e.idx}`);
     if (e.prev_hash !== prev) fail(i, 'prev_hash does not match the previous event');
@@ -41,18 +48,98 @@ export function verifySession({ events, blobs = {}, seals = [], strict = false, 
         else if (wh && sha256(blobs[wh]) !== wh) fail(i, 'world snapshot does not match its hash');
       }
     }
+    if ((e.kind === 'key.rotate' || e.kind === 'key.revoke') && e.data_hash && blobs[e.data_hash] !== undefined && sha256(blobs[e.data_hash]) === e.data_hash) {
+      const d = safeParse(blobs[e.data_hash]);
+      if (d) (e.kind === 'key.rotate' ? chainCerts : chainRevokes).push({ idx: e.idx, data: d });
+    }
+    if (e.kind === 'decision' && e.data_hash && blobs[e.data_hash] !== undefined && sha256(blobs[e.data_hash]) === e.data_hash) {
+      const d = safeParse(blobs[e.data_hash]);
+      if (d && d.resolves_idx !== undefined) decisions.push({ idx: e.idx, session: e.session_id, data: d });
+    }
+    if (e.kind === 'command.begin') begun.set(e.idx, e.data_hash && blobs[e.data_hash] !== undefined ? safeParse(blobs[e.data_hash])?.intent_idx ?? null : null);
+    else if (e.kind === 'command' && e.data_hash && blobs[e.data_hash] !== undefined) {
+      const b = safeParse(blobs[e.data_hash])?.begin_idx;
+      if (Number.isInteger(b)) resolved.add(b);
+    }
     prev = e.hash;
   });
+  // Write-ahead: the begin is committed before the click, so a begin with no result means the effect may
+  // have happened without a record. Reported, never silently dropped: a warning, and an error under strict.
+  for (const [idx, intent] of begun) {
+    if (resolved.has(idx)) continue;
+    const reason = `unresolved dispatch: ${intent === null ? 'a command' : `intent #${intent}`} was released and dispatched but no result was recorded`;
+    if (strict) fail(idx, reason); else warnings.push({ idx, reason });
+  }
+  // Trust in signing keys. With a pin (trustedKey/trustedKeys) a seal counts only if its key is reachable from a
+  // pinned key through valid rotation certs; without a pin every internally consistent key is accepted, as before.
+  // A key revoked at event R (by a key that is itself trusted) loses every seal whose head is after R.
+  const pinned = new Set([...(trustedKeys ?? []), ...(trustedKey ? [trustedKey] : [])]);
+  const validSeals = seals.filter((s) => verifySignature(s.pubkey, sealMessage(s), s.sig));
+  const sealFps = new Set(validSeals.map((s) => fingerprint(s.pubkey)));
+  const certs = [...rotations.map((cert) => ({ idx: null, cert })), ...chainCerts.map((c) => ({ idx: c.idx, cert: c.data }))].filter((c) => verifyCert(c.cert));
+  const reach = (start, revokedAt) => {
+    const set = new Set(start);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const { idx, cert } of certs) {
+        const from = fingerprint(cert.old_pub); const to = fingerprint(cert.new_pub);
+        if (set.has(to) || !set.has(from)) continue;
+        const r = revokedAt?.get(from); // a bundle-level cert has no position, so a revoked signer cannot vouch at all
+        if (r !== undefined && (idx === null || r < idx)) continue;
+        set.add(to); grew = true;
+      }
+    }
+    return set;
+  };
+  const provisional = reach(pinned, null);
+  const revokedAt = new Map();
+  for (const { idx, data } of chainRevokes) {
+    if (!verifyRevocation(data)) { fail(idx, 'key.revoke signature invalid'); continue; }
+    const by = fingerprint(data.revoker_pub);
+    if (!(pinned.size ? provisional.has(by) : sealFps.has(by) || provisional.has(by))) { fail(idx, 'key.revoke signed by a key that is not trusted'); continue; }
+    if (!revokedAt.has(data.fingerprint)) revokedAt.set(data.fingerprint, idx);
+  }
+  const trusted = reach(pinned, revokedAt);
   const signers = new Set();
   let sealedThrough = -1;
   for (const s of seals) {
     const at = s.head_idx;
     if (!verifySignature(s.pubkey, sealMessage(s), s.sig)) { fail(at, 'seal signature invalid'); continue; }
-    signers.add(fingerprint(s.pubkey));
-    if (trustedKey && fingerprint(s.pubkey) !== trustedKey) fail(at, 'seal signed by an untrusted key');
+    const fp = fingerprint(s.pubkey);
+    signers.add(fp);
+    if (pinned.size && !trusted.has(fp)) { fail(at, 'seal signed by an untrusted key'); continue; }
+    if (revokedAt.has(fp) && at > revokedAt.get(fp)) { fail(at, `seal signed by a key revoked at event #${revokedAt.get(fp)}`); continue; }
     if (at >= events.length) { fail(at, 'seal covers an event that is missing (truncated tail)'); continue; }
     if (events[at].hash !== s.head_hash) { fail(at, 'seal head hash does not match the chain'); continue; }
     sealedThrough = Math.max(sealedThrough, at);
+  }
+  // Approver pinning: every human decision that RELEASED an action must carry a signature by a listed approver key over
+  // {id, verdict, nonce}. Refusals need no proof (they release nothing). Auto-approval is only legitimate inside a fork,
+  // which is recognisable by its fork.start event, so a forged "auto-approve" in a production chain does not pass.
+  if (trustedApprovers) {
+    const allowed = new Set(trustedApprovers);
+    const isFork = events.some((e) => e.kind === 'fork.start');
+    for (const { idx, session, data: d } of decisions) {
+      if (d.verdict !== 'allow') continue;
+      if (d.by === 'auto-approve' && isFork) continue;
+      if (!d.sig || !d.approver_pub) { fail(idx, 'approval is not signed by an approver key'); continue; }
+      const fp = fingerprint(d.approver_pub);
+      if (fp !== d.approver_fp) fail(idx, 'approval names a different approver fingerprint than the key that signed it');
+      else if (!allowed.has(fp)) fail(idx, `approval signed by ${fp}, which is not a trusted approver`);
+      else if (!verifySignature(d.approver_pub, approvalMessage({ id: `${session}.${d.intent_idx}`, verdict: d.verdict, nonce: d.nonce }), d.sig)) fail(idx, 'approval signature does not match the recorded intent, verdict and nonce');
+    }
+  }
+  // Anchors were copied outside the ledger. Every anchored head of this session must still be on the chain
+  // with the same hash: a whole-history rewrite resealed with the same key changes the hash and is caught here.
+  // Asking for anchors but having none for this session is a failure, never a pass.
+  if (anchors) {
+    const sid = events[0]?.session_id;
+    const mine = anchors.filter((a) => a.session === sid);
+    if (!mine.length) fail(events.length - 1, 'no anchor record for this session, so nothing outside the ledger confirms it');
+    for (const a of mine) {
+      if (a.head_idx >= events.length) fail(a.head_idx, 'history is shorter than an anchored seal (truncated relative to the anchor)');
+      else if (events[a.head_idx].hash !== a.head_hash) fail(a.head_idx, 'history differs from the anchored seal (rewritten after it was anchored)');
+    }
   }
   const last = events.length - 1;
   const ended = last >= 0 && events[last].kind === 'session.end';
@@ -62,14 +149,14 @@ export function verifySession({ events, blobs = {}, seals = [], strict = false, 
   }
   const badIdx = problems.length ? Math.min(...problems.map((p) => p.idx)) : null;
   return {
-    ok: problems.length === 0, checked: events.length, badIdx, problems,
+    ok: problems.length === 0, checked: events.length, badIdx, problems, warnings,
     ended, sealedThrough, signers: [...signers],
   };
 }
 
 export function verifyBundle(bundle, opts = {}) {
-  if (!bundle || bundle.format !== BUNDLE_FORMAT) return { ok: false, checked: 0, badIdx: null, problems: [{ idx: null, reason: 'not a witnessloop bundle' }], signers: [] };
-  return verifySession({ events: bundle.events, blobs: bundle.blobs, seals: bundle.seals, strict: opts.strict ?? true, trustedKey: opts.trustedKey ?? null });
+  if (!bundle || bundle.format !== BUNDLE_FORMAT) return { ok: false, checked: 0, badIdx: null, problems: [{ idx: null, reason: 'not a witnessloop bundle' }], warnings: [], signers: [] };
+  return verifySession({ events: bundle.events, blobs: bundle.blobs, seals: bundle.seals, strict: opts.strict ?? true, trustedKey: opts.trustedKey ?? null, trustedKeys: opts.trustedKeys ?? null, trustedApprovers: opts.trustedApprovers ?? null, rotations: bundle.rotations ?? [], anchors: opts.anchors ?? null });
 }
 
 export class Ledger {
@@ -90,6 +177,9 @@ export class Ledger {
         UNIQUE (session_id, idx)
       );
       CREATE TABLE IF NOT EXISTS blobs (hash TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS rotations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, old_pub TEXT NOT NULL, new_pub TEXT NOT NULL, ts TEXT NOT NULL, sig TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS seals (
         id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, head_idx INTEGER NOT NULL,
         head_hash TEXT NOT NULL, sig TEXT NOT NULL, pubkey TEXT NOT NULL, ts TEXT NOT NULL
@@ -185,6 +275,52 @@ export class Ledger {
     return s;
   }
 
+  // The record to copy outside the ledger. An active session is sealed at its current head first so the
+  // anchor covers everything recorded so far; an ended session already ends in a seal.
+  anchorRecord(sessionId) {
+    const sid = Number(sessionId);
+    const s = this.getSession(sid);
+    if (!s) throw new Error(`no such session ${sid}`);
+    if (s.status === 'active') this.seal(sid);
+    const seal = this.seals(sid).at(-1);
+    if (!seal) throw new Error(`session ${sid} has no seal to anchor (the ledger has no signing key)`);
+    return { session: sid, head_idx: seal.head_idx, head_hash: seal.head_hash, ts: seal.ts, seal };
+  }
+
+  rotations() {
+    return this.db.prepare('SELECT old_pub, new_pub, ts, sig FROM rotations ORDER BY id').all();
+  }
+
+  // Switch to a new signing key. Every active session records the rotation (signed by the OLD key) and is
+  // sealed by the old key before the switch, so the chain itself shows where one key handed over to the next.
+  // The cert is also kept in the ledger and travels in every bundle, so sessions started later verify from the old pin.
+  rotateKey(newKey) {
+    if (!this.key) throw new Error('ledger has no signing key to rotate');
+    const cert = keyCert(this.key, newKey.publicKey, this.now());
+    this.db.prepare('INSERT INTO rotations (old_pub, new_pub, ts, sig) VALUES (?, ?, ?, ?)').run(cert.old_pub, cert.new_pub, cert.ts, cert.sig);
+    for (const s of this.listSessions().filter((x) => x.status === 'active')) {
+      this.append(s.id, { kind: 'key.rotate', actor: 'relay', data: cert });
+      this.seal(s.id);
+    }
+    this.key = newKey;
+    return cert;
+  }
+
+  // Declare another key untrusted for seals made after this point in every active session. The current
+  // signing key cannot be revoked (that would strand everything it signs next): rotate first.
+  revokeKey(revokedFingerprint) {
+    if (!this.key) throw new Error('ledger has no signing key');
+    if (revokedFingerprint === fingerprint(this.key.publicKey)) throw new Error('refusing to revoke the current signing key: rotate first');
+    const rev = makeRevocation(this.key, revokedFingerprint, this.now());
+    const sessions = [];
+    for (const s of this.listSessions().filter((x) => x.status === 'active')) {
+      this.append(s.id, { kind: 'key.revoke', actor: 'relay', data: rev });
+      this.seal(s.id);
+      sessions.push(s.id);
+    }
+    return { revocation: rev, sessions };
+  }
+
   seals(sessionId) {
     return this.db.prepare('SELECT session_id, head_idx, head_hash, sig, pubkey, ts FROM seals WHERE session_id = ? ORDER BY id').all(Number(sessionId));
   }
@@ -213,14 +349,14 @@ export class Ledger {
         if (wh) blobs[wh] = rawBlob(wh);
       }
     }
-    return { format: BUNDLE_FORMAT, exportedAt: this.now(), session: this.getSession(sessionId), events, blobs, seals: this.seals(sessionId) };
+    return { format: BUNDLE_FORMAT, exportedAt: this.now(), session: this.getSession(sessionId), events, blobs, seals: this.seals(sessionId), rotations: this.rotations() };
   }
 
   // Verify one session in place. Also anchors a fork to its parent: the parent head hash the fork
   // recorded must exist in the parent's chain, otherwise the fork claims a past that never was.
   verifySessionId(sessionId, opts = {}) {
     const b = this.bundle(sessionId);
-    const r = verifySession({ events: b.events, blobs: b.blobs, seals: b.seals, strict: opts.strict ?? false, trustedKey: opts.trustedKey ?? null });
+    const r = verifySession({ events: b.events, blobs: b.blobs, seals: b.seals, strict: opts.strict ?? false, trustedKey: opts.trustedKey ?? null, trustedKeys: opts.trustedKeys ?? null, trustedApprovers: opts.trustedApprovers ?? null, rotations: b.rotations, anchors: opts.anchors ?? null });
     const start = b.events[0] ? this.getBlob(b.events[0].data_hash) : null;
     const forkEvent = b.events.find((e) => e.kind === 'fork.start');
     if (forkEvent) {
