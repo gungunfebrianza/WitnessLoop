@@ -7,7 +7,7 @@
   "engines": { "node": ">=24" },
   "bin": { "witnessloop": "src/cli.mjs" },
   "scripts": {
-    "test": "node --test --test-force-exit --test-concurrency=2 \"test/*.test.mjs\"",
+    "test": "node --test --test-force-exit --test-concurrency=1 \"test/*.test.mjs\"",
     "serve": "node src/cli.mjs serve",
     "demo:bank": "node examples/agents/demo.mjs bank",
     "demo:mailer": "node examples/agents/demo.mjs mailer",

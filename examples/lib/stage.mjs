@@ -22,7 +22,7 @@ const APPS = {
 
 export const readPolicy = (file) => JSON.parse(fs.readFileSync(path.join(HERE, '..', 'policies', file), 'utf8'));
 
-async function waitAgent(client, name, timeoutMs = 10000) {
+async function waitAgent(client, name, timeoutMs = 30000) {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if ((await client.health()).agents.includes(name)) return;
