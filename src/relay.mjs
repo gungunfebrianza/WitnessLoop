@@ -247,7 +247,7 @@ export async function createRelay({
     };
     if (req.method === 'GET' && (url.pathname === '/dashboard' || url.pathname === '/dashboard/')) {
       const html = fs.readFileSync(DASHBOARD_HTML);
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': html.length, 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': html.length, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" });
       res.end(html);
       return;
     }
