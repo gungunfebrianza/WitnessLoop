@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>witnessloop dashboard</title>
+<style>
+:root{--bg:#f7f7f5;--panel:#fff;--ink:#1c1c1a;--mute:#6b6b66;--line:#dcdcd6;--ok:#2f7d4f;--bad:#b3322b;--warn:#b7791f;--acc:#2b5fb3;--infer:#8a6bb8}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--panel:#1f1f1d;--ink:#e8e8e3;--mute:#9a9a92;--line:#333330;--ok:#5cbf85;--bad:#e5665e;--warn:#e0a94a;--acc:#7aa5ee;--infer:#b79be0}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,sans-serif}
+header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}header span{color:var(--mute)}
+.layout{display:grid;grid-template-columns:260px 1fr;min-height:calc(100vh - 50px)}
+@media (max-width:800px){.layout{grid-template-columns:1fr}}
+nav{border-right:1px solid var(--line);padding:8px;overflow:auto}
+nav button.s{display:block;width:100%;text-align:left;background:none;border:1px solid transparent;color:var(--ink);padding:6px 8px;border-radius:6px;cursor:pointer;font:inherit}
+nav button.s:hover{background:var(--panel)}nav button.s.on{background:var(--panel);border-color:var(--line)}
+nav .sub{color:var(--mute);font-size:12px;display:block}
+main{padding:16px;min-width:0}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px}
+.tabs button{background:var(--panel);border:1px solid var(--line);color:var(--ink);padding:5px 10px;border-radius:6px;cursor:pointer;font:inherit}
+.tabs button.on{border-color:var(--acc);color:var(--acc)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+.card h2{font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute)}
+.note{color:var(--mute);font-size:12px}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;border:1px solid}
+.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.bad{color:var(--bad);border-color:var(--bad)}.badge.warn{color:var(--warn);border-color:var(--warn)}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500;font-size:12px}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+code,pre{font:12px ui-monospace,Consolas,monospace}pre{margin:0;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
+.bar{height:14px;background:var(--acc);border-radius:3px;min-width:1px}.barrow{display:grid;grid-template-columns:170px 1fr 48px;gap:8px;align-items:center;margin:3px 0}
+.bar.ok{background:var(--ok)}.bar.bad{background:var(--bad)}.bar.warn{background:var(--warn)}
+.strip{display:flex;gap:2px;flex-wrap:wrap}.cell{width:18px;height:22px;border-radius:3px;background:var(--ok);cursor:pointer}.cell.bad{background:var(--bad)}.cell.first{outline:2px solid var(--ink)}
+button.a{background:var(--panel);border:1px solid var(--line);color:var(--ink);padding:4px 10px;border-radius:6px;cursor:pointer;font:inherit}button.a:hover{border-color:var(--acc)}
+svg{width:100%;display:block}svg text{fill:var(--mute);font-size:10px}
+textarea{width:100%;min-height:120px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;font:12px ui-monospace,Consolas,monospace;padding:6px}
+.legend span{margin-right:12px;font-size:12px;color:var(--mute)}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
+</style>
+</head>
+<body>
+<header><h1>witnessloop</h1><span>every badge below is computed by running the verifier on the ledger, not read from a stored flag</span><span id="stamp"></span></header>
+<div class="layout"><nav id="nav"></nav><main id="main"></main></div>
+<script>
+'use strict';
+// All ledger-derived text can be attacker-influenced (page content, agent params): only ever set via textContent.
+const h = (tag, attrs, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v); }
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) e.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return e;
+};
+// replaceChildren does not flatten arrays and would render null as the text "null"
+const setKids = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+const NS = 'http://www.w3.org/2000/svg';
+const s = (tag, attrs, ...kids) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v); for (const kid of kids.flat(Infinity)) if (kid != null) e.append(kid.nodeType ? kid : document.createTextNode(String(kid))); return e; };
+const J = (v) => JSON.stringify(v);
+const api = async (path, body) => {
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: J(body) });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error);
+  return j.result;
+};
+const pct = (x) => (100 * x).toFixed(0) + '%';
+const badge = (ok, yes, no) => h('span', { class: 'badge ' + (ok ? 'ok' : 'bad') }, ok ? yes : no);
+const card = (title, ...body) => h('div', { class: 'card' }, h('h2', null, title), body);
+const bars = (rows, cls) => {
+  const max = Math.max(1, ...rows.map((r) => r[1]));
+  return rows.map(([label, n, c]) => h('div', { class: 'barrow' }, h('span', null, label), h('div', { class: 'bar ' + (c || cls || ''), style: `width:${Math.max(1, (n / max) * 100)}%` }), h('span', { class: 'n' }, n)));
+};
+const table = (head, rows) => h('table', null, h('tr', null, head.map((x) => h('th', { class: x.startsWith('#') ? 'n' : '' }, x.replace(/^#/, '')))), rows.map((r) => h('tr', null, r.map((c, i) => h('td', { class: head[i].startsWith('#') ? 'n' : '' }, c)))));
+
+let state = { overview: null, sid: null, detail: null, tab: 'integrity' };
+
+async function boot() {
+  try { state.overview = await api('/dashboard/overview'); } catch (e) { setKids(document.getElementById('main'), h('div', { class: 'card' }, 'cannot load: ' + e.message)); return; }
+  document.getElementById('stamp').textContent = 'loaded ' + new Date().toLocaleTimeString();
+  drawNav(); if (state.sid == null) { drawFleet(); } else { await open(state.sid); }
+}
+
+function drawNav() {
+  const nav = document.getElementById('nav');
+  setKids(nav, 
+    h('button', { class: 's' + (state.sid == null ? ' on' : ''), onclick: () => { state.sid = null; drawNav(); drawFleet(); } }, 'Fleet overview', h('span', { class: 'sub' }, state.overview.sessions.length + ' sessions')),
+    h('button', { class: 'a', style: 'margin:6px 0', onclick: boot }, 'Refresh'),
+    state.overview.sessions.slice().reverse().map((x) => h('button', { class: 's' + (state.sid === x.id ? ' on' : ''), onclick: () => open(x.id) },
+      '#' + x.id + ' ' + (x.goal || '(no goal)'), h('span', { class: 'sub' }, x.actor + ' · ' + x.events + ' events · ', x.integrity.ok ? 'verified' : 'BROKEN', x.parent != null ? ' · fork of #' + x.parent : ''))));
+}
+
+// ---------- fleet view: agent comparison, rule hits, overhead ----------
+function drawFleet() {
+  const o = state.overview; const m = document.getElementById('main');
+  const broken = o.sessions.filter((x) => !x.integrity.ok);
+  setKids(m, 
+    card('Integrity across all sessions', h('p', null, badge(!broken.length, 'all ' + o.sessions.length + ' chains verify', broken.length + ' session(s) fail verification'), ' ',
+      broken.map((x) => h('button', { class: 'a', onclick: () => open(x.id) }, '#' + x.id + ' bad at event ' + x.integrity.badIdx))),
+      h('p', { class: 'note' }, 'Verification here proves the recorded chain and seals are internally consistent. It does not prove the signing key holder did not rewrite and reseal history (see docs/THREAT-MODEL.md).')),
+    card('Agent comparison (grouped by acting agent)', o.fleet.length ? table(['agent', '#sessions', '#commands', '#irreversible', 'irrev. share', '#intents', '#denied', 'deny rate', '#flags', '#repeated intents'],
+      o.fleet.map((a) => [a.actor, a.sessions, a.commands, a.irreversible, pct(a.irreversibleShare), a.intents, a.policyDeny + a.humanDeny + a.timeout, pct(a.denyRate), a.flags, a.repeatedIntents])) : 'no sessions yet',
+      h('p', { class: 'note' }, 'Computed from recorded events only; fork and replay sessions are excluded because they re-run the steps of their parent. Model, prompt and task metadata are not captured yet, so runs of the same model are not distinguishable from different models under one actor name.')),
+    card('Policy rule hit map (current policy applied to every recorded intent)', table(['rule', 'reason', 'then', '#hits'],
+      o.ruleHits.map((r) => [r.index === null ? 'default' : '#' + r.index, r.reason, r.then, r.hits])),
+      h('p', { class: 'note' }, o.ruleHits.filter((r) => r.index !== null && r.hits === 0).length + ' rule(s) never matched a recorded intent. Shadowed-rule detection is not implemented; a zero can also mean an earlier rule always wins.')),
+    card('Overhead (recorded costs)', table(['session', '#events', '#ledger bytes', '#bytes/event', '#checkpoint bytes', '#avg command ms', '#verify ms'],
+      o.sessions.map((x) => ['#' + x.id, x.events, x.cost.eventBytes, x.cost.bytesPerEvent, x.cost.checkpointBytes, x.cost.avgCommandMs, x.integrity.verifyMs])),
+      h('p', { class: 'note' }, 'Command time includes the page round trip. A with/without-witnessloop latency comparison needs a benchmark run and is not derived here. Ledger bytes count payload blobs; checkpoint bytes include the world snapshots they reference.')));
+}
+
+// ---------- session view ----------
+const TABS = [['integrity', 'Integrity'], ['timeline', 'Timeline'], ['gate', 'Decision funnel'], ['incident', 'Incident'], ['causal', 'Causal graph'], ['fork', 'Forks'], ['policy', 'Policy what-if']];
+async function open(id) {
+  state.sid = id; drawNav();
+  try { state.detail = await api('/dashboard/sessions/' + id); } catch (e) { setKids(document.getElementById('main'), card('error', e.message)); return; }
+  drawSession();
+}
+function drawSession() {
+  const d = state.detail; const m = document.getElementById('main');
+  const view = { integrity: vIntegrity, timeline: vTimeline, gate: vGate, incident: vIncident, causal: vCausal, fork: vFork, policy: vPolicy }[state.tab];
+  setKids(m, 
+    h('div', { class: 'tabs' }, TABS.map(([k, label]) => h('button', { class: state.tab === k ? 'on' : '', onclick: () => { state.tab = k; drawSession(); } }, label))),
+    h('p', null, h('b', null, '#' + d.summary.id + ' ' + (d.summary.goal || '')), ' ', h('span', { class: 'note' }, d.summary.actor + ' on ' + d.summary.agent + ' · ' + d.summary.status)),
+    view(d));
+}
+
+function vIntegrity(d) {
+  const i = d.summary.integrity; const box = h('div');
+  const out = h('div');
+  const run = async (mode) => {
+    setKids(out, 'running…');
+    try {
+      const r = await api('/dashboard/sessions/' + d.summary.id + '/tamper', { mode });
+      setKids(out, h('p', null, 'Tampering on a copy of the exported bundle: ', r.what, '. ', badge(r.detected, 'verifier detected it', 'NOT DETECTED'),
+        r.after.badIdx != null ? ' first bad event: #' + r.after.badIdx : ''), table(['event', 'reason'], r.after.problems.map((p) => ['#' + p.idx, p.reason])));
+    } catch (e) { setKids(out, e.message); }
+  };
+  box.append(
+    card('Chain health', h('p', null, badge(i.ok, 'chain and seals verify', 'VERIFICATION FAILED'), ' ', badge(i.strictOk, 'strict: sealed to the end', 'strict: not fully sealed'), ' ', h('span', { class: 'note' }, 'verified in ' + i.verifyMs + ' ms')),
+      table(['check', 'result'], [
+        ['events checked', i.checked],
+        ['first bad event', i.badIdx == null ? 'none' : '#' + i.badIdx],
+        ['sealed through', i.sealedThrough < 0 ? 'nothing' : 'event #' + i.sealedThrough],
+        ['unsealed tail', i.unsealedTail + ' event(s)' + (i.unsealedTail ? ' — truncation of these would go undetected' : '')],
+        ['session ended', i.ended ? 'yes' : 'no'],
+        ['signer fingerprint(s)', i.signers.join(', ') || 'none']]),
+      i.problems.length ? table(['event', 'problem'], i.problems.map((p) => ['#' + p.idx, p.reason])) : null,
+      h('p', { class: 'note' }, 'Trust in the signer is not checked here: pin a key with verify --trusted-key. External anchoring of seal hashes is not built, so this view cannot detect a full rewrite by the key holder.')),
+    card('Tamper demonstration', h('p', { class: 'note' }, 'Damages an in-memory copy of this session\'s bundle and runs the real verifier on it. The stored ledger is never modified.'),
+      h('p', null, h('button', { class: 'a', onclick: () => run('payload') }, 'Flip one payload byte'), ' ', h('button', { class: 'a', onclick: () => run('delete') }, 'Delete a middle event'), ' ', h('button', { class: 'a', onclick: () => run('truncate') }, 'Truncate the tail')), out));
+  return box;
+}
+
+// timeline: one lane per kind, x = event index
+function vTimeline(d) {
+  const lanes = ['session.start', 'command', 'intent', 'decision', 'flag', 'checkpoint', 'session.end']; const lane = (k) => { const i = lanes.indexOf(k); return i < 0 ? lanes.length : i; };
+  const n = d.timeline.length; const W = 1000; const LH = 26; const H = LH * (lanes.length + 1) + 20; const X = (i) => 90 + (i / Math.max(1, n - 1)) * (W - 110);
+  const info = h('pre', null, 'click an event');
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}` });
+  lanes.forEach((k, i) => svg.append(s('text', { x: 4, y: 14 + i * LH + 4 }, k), s('line', { x1: 90, x2: W - 20, y1: 14 + i * LH, y2: 14 + i * LH, stroke: 'currentColor', 'stroke-opacity': .12 })));
+  const first = d.bisect?.found ? d.bisect.firstBad.commandIdx : null;
+  if (first != null) svg.append(s('line', { x1: X(first), x2: X(first), y1: 0, y2: H - 6, stroke: 'var(--bad)', 'stroke-width': 2, 'stroke-dasharray': '4 3' }), s('text', { x: X(first) + 4, y: H - 8, style: 'fill:var(--bad)' }, 'first bad: #' + first));
+  for (const e of d.timeline) {
+    const bad = e.ok === false || e.verdict === 'deny' || e.kind === 'flag';
+    const col = e.kind === 'flag' ? 'var(--warn)' : bad ? 'var(--bad)' : e.effect === 'irreversible' ? 'var(--acc)' : 'currentColor';
+    const c = s('circle', { cx: X(e.idx), cy: 14 + lane(e.kind) * LH, r: e.effect === 'irreversible' ? 6 : 4, fill: col, 'fill-opacity': e.effect === 'irreversible' || bad ? 1 : .5, style: 'cursor:pointer' }, s('title', {}, `#${e.idx} ${e.kind} ${e.type || ''}`));
+    c.addEventListener('click', () => { info.textContent = J(e).replace(/,"/g, ',\n"'); }); svg.append(c);
+  }
+  return h('div', null, card('Session timeline', svg, h('p', { class: 'legend' }, h('span', null, h('i', { class: 'dot', style: 'background:var(--acc)' }), 'irreversible'), h('span', null, h('i', { class: 'dot', style: 'background:var(--bad)' }), 'denied / failed'), h('span', null, h('i', { class: 'dot', style: 'background:var(--warn)' }), 'flag'), h('span', null, h('i', { class: 'dot', style: 'background:currentColor;opacity:.5' }), 'other')), info));
+}
+
+function vGate(d) {
+  const f = d.gate.funnel;
+  const lat = d.gate.latencies.slice().sort((a, b) => a - b);
+  const buckets = [['<100 ms', 0, 100], ['100 ms–1 s', 100, 1000], ['1–10 s', 1000, 10000], ['>10 s', 10000, 1e12]].map(([l, lo, hi]) => [l, lat.filter((x) => x >= lo && x < hi).length]);
+  return h('div', null,
+    card('Decision funnel', bars([['intents recorded', f.intents], ['policy: allow', f.policyAllow, 'ok'], ['policy: deny', f.policyDeny, 'bad'], ['policy: needs approval', f.policyAsk, 'warn'], ['human: allow', f.humanAllow, 'ok'], ['human: deny', f.humanDeny, 'bad'], ['approval timed out (= deny)', f.timeout, 'bad'], ['released to the page', f.released, 'ok'], ['refused, nothing dispatched', f.refused, 'bad']]),
+      h('p', { class: 'note' }, 'If almost everything needs approval the policy is weak; if almost everything is allowed by policy it may be too loose.')),
+    card('Approval latency', lat.length ? [bars(buckets), h('p', { class: 'note' }, 'median ' + lat[lat.length >> 1] + ' ms over ' + lat.length + ' approval(s). Timeouts are included and count as denials.')] : 'no approvals in this session'),
+    card('Intents', d.gate.intents.length ? table(['event', 'what the page said would happen', 'policy', 'rule', 'final', 'by', '#wait ms'], d.gate.intents.map((r) => ['#' + r.idx, J(r.preview ?? r.params), r.verdict, r.rule === null ? 'default' : '#' + r.rule + ' ' + (r.reason || ''), r.final, r.by, r.latencyMs ?? ''])) : 'no irreversible intents'),
+    card('Repeated intents', d.repeats.length ? table(['events', 'params'], d.repeats.map((r) => [r.intents.map((x) => '#' + x).join(', '), J(r.preview ?? r.params)])) : 'none', h('p', { class: 'note' }, 'Identical intents attempted more than once, including after a denial.')));
+}
+
+function vIncident(d) {
+  const box = h('div'); const diffOut = h('div');
+  const show = async (cp) => {
+    diffOut.replaceChildren('loading…');
+    try { const r = await api('/dashboard/sessions/' + d.summary.id + '/diff?cp=' + cp); diffOut.replaceChildren(h('p', { class: 'note' }, r.previousIdx == null ? r.note : `checkpoint #${cp} (after command #${r.afterIdx}) against #${r.previousIdx}`), r.diff.length ? table(['path', 'before', 'after'], r.diff.map((x) => [x.path, J(x.before), J(x.after)])) : 'no comparable state change'); } catch (e) { diffOut.replaceChildren(e.message); }
+  };
+  if (!d.invariantSeries) { box.append(card('Invariant', 'The relay was started without an app profile that defines an invariant, so bisect cannot run. Start it with serve --profile <file>.')); }
+  else {
+    const b = d.bisect; const badCount = d.invariantSeries.filter((x) => !x.ok).length;
+    const monotone = (() => { let broke = false; for (const x of d.invariantSeries) { if (!x.ok) broke = true; else if (broke) return false; } return true; })();
+    box.append(card('Bisect result', b.found ? [h('p', null, badge(false, '', 'invariant broke'), ' first at command #' + b.firstBad.commandIdx + ' (' + b.firstBad.command?.type + ')'),
+      table(['field', 'value'], [['why', b.firstBad.why], ['page preview', J(b.firstBad.preview)], ['command params', J(b.firstBad.command?.params)], ['approved by', b.firstBad.approvedBy ?? 'n/a (not gated)'], ['last good checkpoint', b.lastGoodCheckpointIdx == null ? 'none' : '#' + b.lastGoodCheckpointIdx], ['causal ancestors', b.firstBad.causes.length ? b.firstBad.causes.map((c) => '#' + c.idx + ' ' + c.via + (c.inferred ? ' (inferred)' : '')).join(', ') : 'none']])] : h('p', null, badge(true, 'invariant holds at every checkpoint', ''))),
+      card('Invariant along the session', h('div', { class: 'strip' }, d.invariantSeries.map((x) => h('div', { class: 'cell' + (x.ok ? '' : ' bad') + (b.found && x.idx === b.firstBad.checkpointIdx ? ' first' : ''), title: `checkpoint #${x.idx}: ${x.ok ? 'ok' : x.why}`, onclick: () => show(x.idx) }))),
+        h('p', { class: 'note' }, `${d.invariantSeries.length} checkpoints, ${badCount} failing. ` + (monotone ? 'Breakage is monotone here, so --search binary would agree with linear.' : 'Once broken the invariant recovers later: --search binary can be wrong for this session.') + ' Click a cell for the state diff at that checkpoint.')));
+  }
+  box.append(card('State diff', diffOut, h('p', { class: 'note' }, 'Volatile keys declared by the app profile are excluded.')));
+  if (d.bisect?.found) show(d.bisect.firstBad.checkpointIdx);
+  return box;
+}
+
+// causal graph: events on a line, arcs above. Solid = recorded, dashed purple = inferred (a heuristic, never proof).
+function vCausal(d) {
+  const nodes = d.causal.nodes; const W = 1000; const H = 300; const X = (idx) => 30 + (nodes.findIndex((n) => n.idx === idx) / Math.max(1, nodes.length - 1)) * (W - 60);
+  const info = h('pre', null, 'click a node to list its ancestors');
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}` }); const base = H - 40;
+  const arcs = [];
+  for (const e of d.causal.edges) {
+    const a = X(e.cause); const b = X(e.effect); if (isNaN(a) || isNaN(b)) continue;
+    const r = Math.abs(b - a) / 2;
+    const p = s('path', { d: `M${a},${base} A${r},${Math.min(r, 230)} 0 0 ${a < b ? 1 : 0} ${b},${base}`, fill: 'none', stroke: e.inferred ? 'var(--infer)' : 'var(--acc)', 'stroke-width': 1.4, 'stroke-dasharray': e.inferred ? '5 3' : '', 'stroke-opacity': .7 }, s('title', {}, `#${e.cause} → #${e.effect}: ${e.kind}${e.inferred ? ' (inferred, heuristic)' : ''}`));
+    p.dataset.c = e.cause; p.dataset.e = e.effect; arcs.push(p); svg.append(p);
+  }
+  nodes.forEach((n) => {
+    const c = s('circle', { cx: X(n.idx), cy: base, r: 5, fill: n.kind === 'flag' ? 'var(--warn)' : n.ok === false ? 'var(--bad)' : n.effect === 'irreversible' ? 'var(--acc)' : 'currentColor', 'fill-opacity': .8, style: 'cursor:pointer' }, s('title', {}, `#${n.idx} ${n.kind} ${n.type || ''}`));
+    c.addEventListener('click', async () => {
+      const anc = await api('/dashboard/sessions/' + d.summary.id + '/ancestors?idx=' + n.idx); const set = new Set(anc.map((x) => String(x.idx))); set.add(String(n.idx));
+      arcs.forEach((p) => p.setAttribute('stroke-opacity', set.has(p.dataset.c) && set.has(p.dataset.e) ? 1 : .08));
+      info.textContent = anc.length ? `#${n.idx} ${n.kind} ${n.type || ''}\n` + anc.map((x) => `  ← #${x.idx} via ${x.via}${x.inferred ? ' (INFERRED — heuristic, not proof)' : ''}`).join('\n') : `#${n.idx} has no recorded ancestors`;
+    });
+    svg.append(c);
+  });
+  return card('Causal graph', svg, h('p', { class: 'legend' }, h('span', null, '━ recorded structure'), h('span', { style: 'color:var(--infer)' }, '╍ inferred (derived_from, observes): heuristics, never quote as proof of influence')), info);
+}
+
+function vFork(d) {
+  const out = h('div'); const cmp = async (a, b) => {
+    setKids(out, 'comparing…');
+    try {
+      const r = await api(`/compare?a=${a}&b=${b}`);
+      setKids(out, h('p', null, `#${a}: ${r.attemptsA} attempts · #${b}: ${r.attemptsB} attempts · `, badge(r.finalState.same, 'same final state', 'final states differ')),
+        h('p', null, 'first divergence: ', r.firstDivergence ? `attempt ${r.firstDivergence.position}: ${r.firstDivergence.reason}` : 'none'),
+        r.finalState.diff.length ? table(['path', '#' + a, '#' + b], r.finalState.diff.map((x) => [x.path, J(x.before), J(x.after)])) : null);
+    } catch (e) { setKids(out, e.message); }
+  };
+  const rows = [...d.children.map((c) => [c.id, d.summary.id, c]), ...(d.parent != null ? [[d.summary.id, d.parent, { id: d.summary.id, goal: d.summary.goal, status: d.summary.status }]] : [])];
+  return card('Forks and counterfactuals', rows.length ? [h('p', { class: 'note' }, 'Forks re-run this session against a shadow copy. Compare a fork with its parent to see where they diverged and what differs at the end.'),
+    table(['fork', 'parent', 'goal', ''], rows.map(([f, p, c]) => ['#' + f, '#' + p, c.goal, h('button', { class: 'a', onclick: () => cmp(p, f) }, 'compare')])), out] : 'This session has no forks and is not one. Create one with: witnessloop fork --shadow <agent>');
+}
+
+function vPolicy(d) {
+  const ta = h('textarea', null); const out = h('div');
+  ta.value = JSON.stringify({ default: 'require_approval', rules: [] }, null, 2);
+  const run = async () => {
+    setKids(out, 'evaluating…');
+    try {
+      const r = await api('/dashboard/sessions/' + d.summary.id + '/whatif', { policy: JSON.parse(ta.value) });
+      setKids(out, h('p', null, badge(r.changed === 0, 'no verdict changes', r.changed + ' of ' + r.intents + ' verdicts change')), r.rows.length ? table(['event', 'params', 'current policy', 'alternative', ''], r.rows.map((x) => ['#' + x.idx, J(x.params), x.current, x.alternative + ' (' + x.alternativeReason + ')', x.changed ? '◄ changed' : ''])) : 'no intents');
+    } catch (e) { setKids(out, e.message); }
+  };
+  return card('Policy what-if', h('p', { class: 'note' }, 'Re-evaluates every recorded intent of this session under an alternative policy. It compares verdicts only; it does not re-run anything. Use a fork to test the effect.'), ta, h('p', null, h('button', { class: 'a', onclick: run }, 'Evaluate')), out);
+}
+
+boot();
+</script>
+</body>
+</html>

@@ -112,6 +112,11 @@ export class Ledger {
     return row ? JSON.parse(row.json) : null;
   }
 
+  blobBytes(hash) {
+    if (!hash) return 0;
+    return this.db.prepare('SELECT length(CAST(json AS BLOB)) AS n FROM blobs WHERE hash = ?').get(hash)?.n ?? 0;
+  }
+
   startSession({ goal = '', actor = 'agent', agent = 'default', parent = null, meta = {} } = {}) {
     const info = this.db.prepare('INSERT INTO sessions (goal, actor, agent, parent_session, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(goal, actor, agent, parent, this.now());

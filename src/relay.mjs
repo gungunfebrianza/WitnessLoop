@@ -13,8 +13,10 @@ import { validatePolicy, DEFAULT_POLICY } from './policy.mjs';
 import { gate, Approvals } from './gate.mjs';
 import { captureWorld, restoreWorld, stateHash } from './world.mjs';
 import { installAnalysisRoutes } from './routes-analysis.mjs';
+import { installDashboardRoutes } from './dashboard.mjs';
 
 export const DEFAULT_PORT = 8974;
+const DASHBOARD_HTML = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dashboard', 'index.html');
 
 export class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -226,6 +228,7 @@ export async function createRelay({
   });
 
   installAnalysisRoutes({ route, api, HttpError });
+  installDashboardRoutes({ route, api, HttpError });
 
   async function readBody(req) {
     const chunks = [];
@@ -242,6 +245,12 @@ export async function createRelay({
       res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text) });
       res.end(text);
     };
+    if (req.method === 'GET' && (url.pathname === '/dashboard' || url.pathname === '/dashboard/')) {
+      const html = fs.readFileSync(DASHBOARD_HTML);
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': html.length, 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" });
+      res.end(html);
+      return;
+    }
     try {
       const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
       if (!r) throw new HttpError(404, `no route ${req.method} ${url.pathname}`);
