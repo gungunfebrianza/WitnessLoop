@@ -107,7 +107,7 @@ function drawFleet() {
 }
 
 // ---------- session view ----------
-const TABS = [['integrity', 'Integrity'], ['timeline', 'Timeline'], ['gate', 'Decision funnel'], ['incident', 'Incident'], ['causal', 'Causal graph'], ['fork', 'Forks'], ['policy', 'Policy what-if']];
+const TABS = [['integrity', 'Integrity'], ['world', 'World'], ['timeline', 'Timeline'], ['gate', 'Decision funnel'], ['incident', 'Incident'], ['causal', 'Causal graph'], ['fork', 'Forks'], ['policy', 'Policy what-if']];
 async function open(id) {
   state.sid = id; drawNav();
   try { state.detail = await api('/dashboard/sessions/' + id); } catch (e) { setKids(document.getElementById('main'), card('error', e.message)); return; }
@@ -115,11 +115,42 @@ async function open(id) {
 }
 function drawSession() {
   const d = state.detail; const m = document.getElementById('main');
-  const view = { integrity: vIntegrity, timeline: vTimeline, gate: vGate, incident: vIncident, causal: vCausal, fork: vFork, policy: vPolicy }[state.tab];
+  const view = { integrity: vIntegrity, world: vWorld, timeline: vTimeline, gate: vGate, incident: vIncident, causal: vCausal, fork: vFork, policy: vPolicy }[state.tab];
+  const tabs = TABS.filter(([k]) => k !== 'world' || d.worldSeries);
+  if (!tabs.some(([k]) => k === state.tab)) state.tab = 'integrity';
   setKids(m, 
-    h('div', { class: 'tabs' }, TABS.map(([k, label]) => h('button', { class: state.tab === k ? 'on' : '', onclick: () => { state.tab = k; drawSession(); } }, label))),
+    h('div', { class: 'tabs' }, tabs.map(([k, label]) => [k, k === 'world' ? d.worldSeries[0]?.title || label : label]).map(([k, label]) => h('button', { class: state.tab === k ? 'on' : '', onclick: () => { state.tab = k; drawSession(); } }, label))),
     h('p', null, h('b', null, '#' + d.summary.id + ' ' + (d.summary.goal || '')), ' ', h('span', { class: 'note' }, d.summary.actor + ' on ' + d.summary.agent + ' · ' + d.summary.status)),
     view(d));
+}
+
+// world tab: app-defined metrics (profile.metrics) at every checkpoint. Stacked parts show where things are;
+// the deviation chart magnifies what the stacked chart cannot show, e.g. one cent out of 175000.
+function vWorld(d) {
+  const ser = d.worldSeries; const last = ser[ser.length - 1]; const unit = last.unit || '';
+  const keys = [...new Set(ser.flatMap((x) => Object.keys(x.parts)))]; const pal = ['var(--acc)', 'var(--ok)', 'var(--warn)', 'var(--infer)', 'var(--mute)'];
+  const col = (k) => pal[keys.indexOf(k) % pal.length];
+  const W = 1000; const H = 220; const L = 60; const R = 20; const T = 10; const B = 26; const n = ser.length; const bw = Math.min(60, (W - L - R) / n * 0.7);
+  const X = (i) => L + (n === 1 ? 0.5 : (i + 0.5) / n) * (W - L - R);
+  const top = Math.max(...ser.map((x) => x.total), ...ser.map((x) => x.expected ?? 0), 1); const Y = (v) => T + (1 - v / top) * (H - T - B);
+  const stack = s('svg', { viewBox: `0 0 ${W} ${H}` });
+  [0, .5, 1].forEach((f) => stack.append(s('line', { x1: L, x2: W - R, y1: Y(top * f), y2: Y(top * f), stroke: 'currentColor', 'stroke-opacity': .12 }), s('text', { x: 4, y: Y(top * f) + 3 }, String(Math.round(top * f)))));
+  ser.forEach((x, i) => { let acc = 0; keys.forEach((k) => { const v = x.parts[k] ?? 0; stack.append(s('rect', { x: X(i) - bw / 2, y: Y(acc + v), width: bw, height: Math.max(0, Y(acc) - Y(acc + v)), fill: col(k), 'fill-opacity': .8 }, s('title', {}, `checkpoint #${x.idx} (after command #${x.afterIdx}): ${k} = ${v} ${unit}`))); acc += v; });
+    stack.append(s('text', { x: X(i) - 8, y: H - 10 }, (x.afterIdx == null ? 'start' : '#' + x.afterIdx))); });
+  if (last.expected != null) stack.append(s('line', { x1: L, x2: W - R, y1: Y(last.expected), y2: Y(last.expected), stroke: 'var(--ink)', 'stroke-dasharray': '5 3' }), s('text', { x: W - R - 90, y: Y(last.expected) - 4 }, 'expected ' + last.expected));
+  const devs = ser.map((x) => (x.expected == null ? 0 : x.total - x.expected)); const dmax = Math.max(1, ...devs.map(Math.abs)); const DH = 140; const mid = DH / 2;
+  const dev = s('svg', { viewBox: `0 0 ${W} ${DH}` });
+  dev.append(s('line', { x1: L, x2: W - R, y1: mid, y2: mid, stroke: 'currentColor', 'stroke-opacity': .4 }), s('text', { x: 4, y: mid + 3 }, '0'), s('text', { x: 4, y: 12 }, '+' + dmax), s('text', { x: 4, y: DH - 4 }, '-' + dmax));
+  devs.forEach((v, i) => { const hgt = Math.abs(v) / dmax * (mid - 10); dev.append(s('rect', { x: X(i) - bw / 2, y: v >= 0 ? mid - hgt : mid, width: bw, height: Math.max(v === 0 ? 2 : 1, hgt), fill: v === 0 ? 'var(--ok)' : 'var(--bad)' }, s('title', {}, `checkpoint #${ser[i].idx}: total ${ser[i].total}, deviation ${v} ${unit}`)), s('text', { x: X(i) - 8, y: DH - 4 }, (ser[i].afterIdx == null ? 'start' : '#' + ser[i].afterIdx))); });
+  const firstBad = devs.findIndex((v) => v !== 0);
+  const items = last.items || []; const lost = items.filter((x) => x.delta);
+  return h('div', null,
+    card(last.title + ' by checkpoint', stack, h('p', { class: 'legend' }, keys.map((k) => h('span', null, h('i', { class: 'dot', style: 'background:' + col(k) }, ''), k))),
+      h('p', { class: 'note' }, 'x axis: the command each checkpoint was taken after. Values are ' + (unit || 'raw units') + ', read from the recorded world snapshots, not from the running app.')),
+    card('Deviation from expected total', dev, h('p', null, firstBad < 0 ? badge(true, 'total matches expected at every checkpoint', '') : [badge(false, '', 'total off by ' + devs[firstBad] + ' ' + unit + ' from checkpoint after command #' + ser[firstBad].afterIdx), ' final deviation ' + devs[devs.length - 1] + ' ' + unit]),
+      h('p', { class: 'note' }, 'This is the invariant drawn as a number. The Incident tab shows the same first failure through bisect.')),
+    items.length ? card('Every transfer, and what it lost', table(['transfer', '#amount', '#lost'], items.map((x) => [x.label, x.amount, x.delta ? h('b', { style: 'color:var(--bad)' }, x.delta) : 0])),
+      h('p', { class: 'note' }, lost.length + ' of ' + items.length + ' transfers lost money; total lost ' + lost.reduce((a, x) => a + x.delta, 0) + ' ' + unit + '.')) : null);
 }
 
 function vIntegrity(d) {

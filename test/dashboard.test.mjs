@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { profile as bankExampleProfile } from '../examples/bank/profile.mjs';
 import { withBank, transferVia, waitFor } from './helpers/relay.mjs';
 
 const get = async (relay, p) => (await (await fetch(`http://127.0.0.1:${relay.port}${p}`)).json());
@@ -101,6 +102,21 @@ test('session detail: timeline, approval latency, invariant series, bisect and s
     const missing = await get(relay, `/dashboard/sessions/${sid}/diff?cp=9999`);
     assert.equal(missing.ok, false);
   }, { policy: POLICY });
+});
+
+test('world series: per-checkpoint balances, the deviation from the expected total, and the transfers that leaked', async () => {
+  await withBank(async ({ client, relay }) => {
+    const sid = await story(client);
+    const { result: d } = await get(relay, `/dashboard/sessions/${sid}`);
+    assert.equal(d.worldSeries.length, d.checkpoints.length);
+    const dev = d.worldSeries.map((x) => x.total - x.expected);
+    assert.equal(dev[0], 0, 'genesis is conserved');
+    assert.equal(dev.findIndex((v) => v !== 0), d.invariantSeries.findIndex((x) => !x.ok), 'the deviation chart and the invariant strip break at the same checkpoint');
+    const last = d.worldSeries.at(-1);
+    assert.equal(last.parts.fees > 0, true);
+    const lost = last.items.filter((x) => x.delta);
+    assert.equal(lost.reduce((a, x) => a + x.delta, 0), dev.at(-1), 'cents lost across transfers equals the final deviation');
+  }, { policy: POLICY, profile: bankExampleProfile });
 });
 
 test('repeated identical intents are surfaced', async () => {

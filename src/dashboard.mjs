@@ -156,6 +156,14 @@ export async function sessionDetail(api, sessionId) {
   const checkpoints = events.filter((e) => e.kind === 'checkpoint').map((e) => ({ idx: e.idx, label: e.data.label, afterIdx: e.data.after_idx, stateHash: e.data.state_hash }));
   let bisectResult = null;
   let invariantSeries = null;
+  let worldSeries = null;
+  if (typeof profile.metrics === 'function' && checkpoints.length) {
+    worldSeries = [];
+    for (const cp of checkpoints) {
+      const world = ledger.getBlob(events.find((e) => e.idx === cp.idx).data.world_hash);
+      try { worldSeries.push({ idx: cp.idx, afterIdx: cp.afterIdx, ...(await profile.metrics(world)) }); } catch { /* a bad snapshot must not take the page down */ }
+    }
+  }
   if (typeof profile.invariant === 'function' && checkpoints.length) {
     invariantSeries = [];
     for (const cp of checkpoints) {
@@ -167,7 +175,7 @@ export async function sessionDetail(api, sessionId) {
   }
 
   return {
-    summary, gate: g, timeline, checkpoints, invariantSeries, bisect: bisectResult, causal: graph,
+    summary, gate: g, timeline, checkpoints, invariantSeries, worldSeries, bisect: bisectResult, causal: graph,
     repeats: repeats(events), children: ledger.listSessions().filter((s) => s.parent_session === sessionId).map((s) => ({ id: s.id, goal: s.goal, status: s.status })),
     parent: session.parent_session,
   };

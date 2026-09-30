@@ -41,6 +41,10 @@ test('dashboard renders every view for a real session and treats ledger text as 
     await viewer.evaluate(`[...document.querySelectorAll('button.a')].find((b) => b.innerText === 'Flip one payload byte').click()`);
     await sleep(600);
     assert.match(await text('main'), /verifier detected it/);
+    await walk('Money', /deviation from expected total/i);
+    assert.ok(await viewer.evaluate('document.querySelectorAll("main svg rect").length > 10'), 'money tab draws stacked and deviation bars');
+    assert.match(await text('main'), /total off by -[0-9]+ cents/i);
+    assert.match(await text('main'), /transfers lost money/i);
     await walk('Timeline', /session timeline/i);
     assert.ok(await viewer.evaluate('document.querySelectorAll("main svg circle").length > 10'), 'timeline draws event markers');
     assert.match(await text('main') + await viewer.evaluate('document.querySelector("main svg").innerHTML'), /first bad: #17/);
