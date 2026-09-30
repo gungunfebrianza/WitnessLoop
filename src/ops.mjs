@@ -58,9 +58,9 @@ export const OPS = [
   { name: 'replay-verify', pos: ['id'], flags: ['shadow'], usage: 'replay-verify <session> --shadow <agent>', desc: 'Re-run a session unchanged on a shadow agent and check it reproduces.', run: (c, a) => c.replayVerify(num(a.id), { shadow: a.shadow }) },
   { name: 'compare', pos: ['a', 'b'], usage: 'compare <sessionA> <sessionB>', desc: 'First divergence and world diff between two sessions.', run: (c, a) => c.compare(num(a.a), num(a.b)) },
   { name: 'report', pos: ['id'], usage: 'report <session>', desc: 'Markdown audit report.', markdown: true, run: async (c, a) => (await c.report(num(a.id))).markdown },
-  { name: 'serve', cli: true, flags: ['port', 'db', 'key', 'policy', 'profile', 'checkpoints', 'approvalTimeoutMs'],
-    usage: 'serve [--port N] [--db <file>] [--key <file>] [--policy <file>] [--profile <module>] [--checkpoints mutating|irreversible|none] [--approval-timeout-ms N]',
-    desc: 'Start the relay.' },
+  { name: 'serve', cli: true, flags: ['port', 'db', 'key', 'policy', 'profile', 'checkpoints', 'approvalTimeoutMs'], bools: ['noOpen'],
+    usage: 'serve [--port N] [--db <file>] [--key <file>] [--policy <file>] [--profile <module>] [--checkpoints mutating|irreversible|none] [--approval-timeout-ms N] [--no-open]',
+    desc: 'Start the relay and open the dashboard in your browser (skipped with --no-open, WITNESSLOOP_NO_OPEN=1, CI, or piped output).' },
   { name: 'keygen', cli: true, flags: ['out'], usage: 'keygen [--out <file>]', desc: 'Create the signing key (default .witnessloop/key.json).' },
 ];
 

@@ -21,6 +21,7 @@ npm test                 # 52 tests: ledger tamper cases, gate, fork/replay, CLI
 npm run demo:bank        # planted rounding bug loses a cent; witnessloop finds it, forks a fix, proves it
 npm run demo:mailer      # a page that BCCs an outsider; the gate flags it, the wrong recipient is refused
 npm run demo:todo        # no irreversible effects: exact replay of pure IndexedDB state
+node examples/agents/demo.mjs bank --hold   # keep everything running and open the dashboard on the result (also mailer, todo)
 ```
 
 `demo:bank` prints, from a real headless browser:
@@ -48,6 +49,14 @@ npm run demo:todo        # no irreversible effects: exact replay of pure Indexed
    Page state (localStorage, IndexedDB) is captured automatically.
 4. Optional `--profile`: `{ volatileKeys, invariant(world), effectCheck({preview,before,after}) }`.
 5. Drive it from the CLI, MCP (`claude mcp add --transport stdio witnessloop -- node src/mcp-server.mjs`) or `src/client.mjs`.
+
+## Dashboard
+
+`node src/cli.mjs serve ...` opens `http://127.0.0.1:8974/dashboard` (same port as the relay) in your default browser when started from an interactive terminal. Skipped with `--no-open`, `WITNESSLOOP_NO_OPEN=1`, under `CI`, or when output is piped; the URL is always printed. Read-only, no dependencies, no external requests (CSP `default-src 'none'`); ledger text is only ever rendered as text.
+
+- **Fleet**: chain verification across all sessions, agent comparison, policy rule hit map, recorded overhead.
+- **Per session**: chain health (sealed-through, unsealed tail, strict result) with a tamper demo run on a *copy* of the bundle; event timeline; decision funnel and approval latency; bisect with the invariant along the session and a state diff per checkpoint; causal graph (recorded solid, inferred dashed); fork/compare; policy what-if.
+- Every "verified" badge is computed by running the verifier on request, never read from a stored flag. Not built: external anchor status (needs roadmap 1.2), model/prompt metadata per agent, shadowed-rule detection, with/without-witnessloop latency (needs a benchmark run).
 
 ## Commands (CLI and MCP action names are the same table)
 

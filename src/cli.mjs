@@ -6,6 +6,7 @@ import { OPS, findOp } from './ops.mjs';
 import { createClient } from './client.mjs';
 import { createRelay, DEFAULT_PORT } from './relay.mjs';
 import { loadOrCreateKey } from './attest.mjs';
+import { openUrl, shouldOpen } from './open.mjs';
 
 const camel = (s) => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
@@ -52,6 +53,9 @@ async function serve(a) {
   });
   await relay.listen();
   console.log(`witnessloop relay listening on http://127.0.0.1:${relay.port}  (db ${a.db ?? path.join(dir, 'ledger.db')})`);
+  const dashboard = `http://127.0.0.1:${relay.port}/dashboard`;
+  console.log(`dashboard: ${dashboard}`);
+  if (shouldOpen({ noOpen: a.noOpen })) openUrl(dashboard);
   process.on('SIGINT', async () => { await relay.close(); process.exit(0); });
 }
 
