@@ -11,6 +11,7 @@
     "serve": "node src/cli.mjs serve",
     "demo:bank": "node examples/agents/demo.mjs bank",
     "demo:mailer": "node examples/agents/demo.mjs mailer",
-    "demo:todo": "node examples/agents/demo.mjs todo"
+    "demo:todo": "node examples/agents/demo.mjs todo",
+    "demo:shop": "node examples/agents/demo.mjs shop"
   }
 }

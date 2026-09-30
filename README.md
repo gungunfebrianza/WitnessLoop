@@ -17,11 +17,12 @@ Zero dependencies. Node 24+. A lean re-implementation of the core of
 ## See it work (needs any Chromium / Edge / Chrome)
 
 ```bash
-npm test                 # 52 tests: ledger tamper cases, gate, fork/replay, CLI/MCP, real-browser e2e
+npm test                 # 146 tests: ledger tamper cases, gate, anchors, keys, approvers, auth, fork/replay, CLI/MCP, real-browser e2e
 npm run demo:bank        # planted rounding bug loses a cent; witnessloop finds it, forks a fix, proves it
 npm run demo:mailer      # a page that BCCs an outsider; the gate flags it, the wrong recipient is refused
 npm run demo:todo        # no irreversible effects: exact replay of pure IndexedDB state
-node examples/agents/demo.mjs bank --hold   # keep everything running and open the dashboard on the result (also mailer, todo)
+npm run demo:shop        # an unannotated Pay button: not stopped, but flagged live and detected offline (after the fact)
+node examples/agents/demo.mjs bank --hold   # keep everything running and open the dashboard on the result (also mailer, todo, shop)
 ```
 
 `demo:bank` prints, from a real headless browser:
@@ -68,7 +69,7 @@ node examples/agents/demo.mjs bank --hold   # keep everything running and open t
 `replay-verify --shadow <agent>` `compare a b` `report` `serve` `keygen [--role approver]` `anchor <session> [--sink f]` `rotate-key` `revoke-key <fp>`.
 `verify` and `verify-bundle` also take `--anchor <file>`, `--trusted-key <fp>` and `--trusted-approver <fp>` (repeatable). Run `node src/cli.mjs --help`.
 
-**Access and approvals.** Every relay call carries a bearer token (`serve` writes `.witnessloop/token`; clients read it or `WITNESSLOOP_TOKEN`). Approvals are signed: `keygen --role approver`, start the relay with `serve --approver <fingerprint>`, then `approve <id> --key .witnessloop/approver.json`. Unsigned approvals are refused unless `serve --allow-unsigned-approvals`. `verify` warns about *unresolved dispatches* (a released irreversible click with no recorded result) and fails them under `--strict`.
+**Access and approvals.** Every relay call carries a bearer token (`serve` writes `.witnessloop/token`; clients read it or `WITNESSLOOP_TOKEN`). Approvals are signed: `keygen --role approver`, start the relay with `serve --approver <fingerprint>`, then `approve <id> --key .witnessloop/approver.json`. Unsigned approvals are refused unless `serve --allow-unsigned-approvals`. The relay serves only loopback `Host` names and refuses foreign `Origin`s. `verify` warns about *unresolved dispatches* (a state-changing command released to the page with no recorded result; the write-ahead `command.begin` is what makes it visible) and fails them under `--strict`.
 
 **Undeclared effects.** The gate trusts `data-wl-effect`; an unannotated Pay button is not stopped. What witnessloop does about it, all *after the fact or advisory*: a click that makes a non-GET request under a `reversible`/unannotated label is flagged live (`undeclared_effect`, with method, origin, path and a body hash, never the body); `detect` and the report find reversible clicks that moved app-server state; `lint-page` lists unannotated candidates. Try `node examples/agents/demo.mjs shop`. Details and what is still missed: THREAT-MODEL limitation 2.
 
