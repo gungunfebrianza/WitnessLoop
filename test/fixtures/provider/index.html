@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>third-party fixture</title></head>
+<body>
+<button id="buy" type="button">Buy</button> <button id="again" type="button">Again</button> <button id="xhr" type="button">XHR</button>
+<p id="out"></p>
+<script src="/witnessloop/inject.js"></script>
+<script>
+  // the provider's origin comes from the app server, so the page works whatever port the test stub got
+  const ready = fetch('/config.json').then((r) => r.json());
+  const say = (t) => { document.getElementById('out').textContent = t; };
+  document.getElementById('buy').addEventListener('click', async () => {
+    const cfg = await ready;
+    try { const j = await (await fetch(cfg.provider + '/quote?sku=1')).json(); localStorage.setItem('quote', String(j.n)); say('quote ' + j.n); } catch (e) { say('failed: ' + e.message); }
+  });
+  document.getElementById('again').addEventListener('click', async () => {
+    const cfg = await ready;
+    try { const j = await (await fetch(cfg.provider + '/other')).json(); localStorage.setItem('other', String(j.n)); say('other ' + j.n); } catch (e) { say('failed: ' + e.message); }
+  });
+  document.getElementById('xhr').addEventListener('click', async () => {
+    const cfg = await ready;
+    try { const x = new XMLHttpRequest(); x.open('GET', cfg.provider + '/quote?sku=1'); x.send(); say('xhr sent'); } catch (e) { say('blocked: ' + e.message); }
+  });
+</script>
+</body></html>

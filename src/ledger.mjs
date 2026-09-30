@@ -46,6 +46,17 @@ export function verifySession({ events, blobs = {}, seals = [], strict = false, 
         const wh = JSON.parse(b).world_hash;
         if (wh && blobs[wh] === undefined) fail(i, 'world snapshot blob missing');
         else if (wh && sha256(blobs[wh]) !== wh) fail(i, 'world snapshot does not match its hash');
+      } else if (e.kind === 'command') {
+        // a command that recorded third-party responses commits to each body by hash; the bodies must travel with the bundle
+        const ext = safeParse(b)?.external;
+        if (Array.isArray(ext)) {
+          for (const x of ext) {
+            const h = x?.response_hash;
+            if (!h) continue;
+            if (blobs[h] === undefined) fail(i, 'external response blob missing');
+            else if (sha256(blobs[h]) !== h) fail(i, 'external response does not match its hash');
+          }
+        }
       }
     }
     if ((e.kind === 'key.rotate' || e.kind === 'key.revoke') && e.data_hash && blobs[e.data_hash] !== undefined && sha256(blobs[e.data_hash]) === e.data_hash) {
@@ -347,6 +358,10 @@ export class Ledger {
       if (e.kind === 'checkpoint' && blobs[e.data_hash]) {
         const wh = JSON.parse(blobs[e.data_hash]).world_hash;
         if (wh) blobs[wh] = rawBlob(wh);
+      }
+      if (e.kind === 'command' && blobs[e.data_hash]) {
+        const ext = JSON.parse(blobs[e.data_hash]).external;
+        if (Array.isArray(ext)) for (const x of ext) if (x?.response_hash) blobs[x.response_hash] = rawBlob(x.response_hash);
       }
     }
     return { format: BUNDLE_FORMAT, exportedAt: this.now(), session: this.getSession(sessionId), events, blobs, seals: this.seals(sessionId), rotations: this.rotations() };

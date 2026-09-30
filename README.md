@@ -11,13 +11,13 @@ Zero dependencies. Node 24+. A lean re-implementation of the core of
 | A log says what the system *claims* happened | **Attested ledger**: hash-chained per session, payloads content-addressed, ed25519-sealed. Any edit, deletion, reorder or truncation is caught at the exact event, offline, from an exported bundle |
 | Irreversible effects run, then get logged | **Two-phase gate**: `intent` -> policy verdict -> (human approval) -> only then dispatch. If the ledger cannot record the decision, nothing is dispatched (fail closed) |
 | "What if?" is a story, not a fact | **Forks**: restore a recorded world checkpoint into a *shadow* copy of the app, re-run with a param changed, a step skipped, or a different policy, and compare |
-| "It reproduces" is an assertion | **replay-verify**: re-run a whole session unchanged on the shadow; reproduced only if every step result and the final world match |
+| "It reproduces" is an assertion | **replay-verify**: re-run a whole session unchanged on the shadow; reproduced only if every step result and the final world match. Every difference is labelled `volatile` / `nondeterministic` / `external` / `unknown` with its evidence |
 | Failures are incidents to argue about | **bisect**: first recorded event after which an app invariant broke, who approved it, what changed, and its causes (recorded vs *inferred* edges kept apart) |
 
 ## See it work (needs any Chromium / Edge / Chrome)
 
 ```bash
-npm test                 # 146 tests: ledger tamper cases, gate, anchors, keys, approvers, auth, fork/replay, CLI/MCP, real-browser e2e
+npm test                 # 202 tests: ledger tamper cases, gate, anchors, keys, approvers, auth, fork/replay, CLI/MCP, real-browser e2e
 npm run demo:bank        # planted rounding bug loses a cent; witnessloop finds it, forks a fix, proves it
 npm run demo:mailer      # a page that BCCs an outsider; the gate flags it, the wrong recipient is refused
 npm run demo:todo        # no irreversible effects: exact replay of pure IndexedDB state
@@ -66,7 +66,7 @@ node examples/agents/demo.mjs bank --hold   # keep everything running and open t
 `checkpoint` `verify <session> [--strict]` `verify-bundle <file>` `export <session> --out f.wl.json`
 `causal` `bisect [--search linear|binary]` `fork --shadow <agent> [--at N] [--override idx.param=v] [--skip a,b] [--policy f]`
 `detect <session>` `lint-page <file|url>` `policy --dry-run <session> [file]`
-`replay-verify --shadow <agent>` `compare a b` `report` `serve` `keygen [--role approver]` `anchor <session> [--sink f]` `rotate-key` `revoke-key <fp>`.
+`replay-verify --shadow <agent>` `compare a b` `report` `serve` (`--record-nondeterminism`, `--record-external` are opt-in recording) `keygen [--role approver]` `anchor <session> [--sink f]` `rotate-key` `revoke-key <fp>`.
 `verify` and `verify-bundle` also take `--anchor <file>`, `--trusted-key <fp>` and `--trusted-approver <fp>` (repeatable). Run `node src/cli.mjs --help`.
 
 **Access and approvals.** Every relay call carries a bearer token (`serve` writes `.witnessloop/token`; clients read it or `WITNESSLOOP_TOKEN`). Approvals are signed: `keygen --role approver`, start the relay with `serve --approver <fingerprint>`, then `approve <id> --key .witnessloop/approver.json`. Unsigned approvals are refused unless `serve --allow-unsigned-approvals`. The relay serves only loopback `Host` names and refuses foreign `Origin`s. `verify` warns about *unresolved dispatches* (a state-changing command released to the page with no recorded result; the write-ahead `command.begin` is what makes it visible) and fails them under `--strict`.
@@ -82,8 +82,10 @@ There is deliberately **no `eval`**: an unbounded write cannot be classified, so
 
 - The signing key is local. Sealing gives tamper *evidence* against later edits, not against whoever holds the key; `anchor` helps only if the sink is outside the key holder's control.
 - The gate is only as good as the page's `data-wl-effect` annotations. The relay token and approver keys are files readable by the same OS user; approver keys must be kept away from the agent.
-- Replay is scoped to a shadow environment and app-declared volatile fields. Causal `derived_from` edges are heuristics and labelled *inferred*.
-- IndexedDB cannot rewind `autoIncrement` key generators; use explicit ids in apps you want to replay exactly.
+- Replay is scoped to a shadow environment. Clock and randomness replay exactly only if production ran with `serve --record-nondeterminism` (values drawn during clicks and fills; the agent must be the first script on the page); third-party `fetch` responses replay from a recording only for origins named with `serve --record-external <origin>`. Everything else that differs is reported and classified, not hidden. See `docs/THREAT-MODEL.md`.
+- A checkpoint holds localStorage, sessionStorage, `document.cookie`, service-worker registrations, IndexedDB and adapter state, and says on the record what it cannot hold (HttpOnly cookies, worker caches, live connections). `redactKeys` in the profile keeps named values out of snapshots and bundles; command params and results are not redacted.
+- IndexedDB cannot rewind `autoIncrement` key generators: the drift is measured after a restore and reported (and classified when it causes a difference); use explicit ids in apps you want to replay exactly.
+- Causal `derived_from` and `observes` edges are heuristics, always labelled *inferred*. `value_flow` is a recorded observation by the page agent that a value it served came back exactly in a later fill: not proof of cause.
 
 ## Layout
 

@@ -52,12 +52,31 @@ Approvals are signed: each pending approval carries a one-time nonce, and the ap
 
 ## Checkpoints, forks, replay
 
-`world = { page:{localStorage, indexedDB, url}, server }`; `stateHash` compares only storage + server state
-(not the url, not `volatileKeys`). Fork at event N: take the last checkpoint before N, `restoreWorld` on the
+`world = { page:{localStorage, sessionStorage, cookies, serviceWorkers, indexedDB, url, meta}, server }`. `stateHash` compares
+the stores and the server state (not the url, not `volatileKeys`). The relay writes every snapshot through one function that
+applies `profile.redactKeys` and records `coverage` (captured, `notCaptured`, redacted count) on the checkpoint event, so what a
+checkpoint cannot hold is stated on the record. An autoIncrement store's next key is read by an aborted probe transaction (an abort rewinds the generator). Fork at event N: take the last checkpoint before N, `restoreWorld` on the
 shadow agent (server via adapter, page via `world.restore` then reload), open a child session, record
 `fork.start`, then re-execute every recorded `command` at or after N through the normal pipeline
 (`runCommand`), so the fork is itself gated, checkpointed and verifiable. Refused (denied) intents are
 never replayed because they never ran. `compare` aligns *attempts* (commands, plus intents that were refused).
+
+**What a replay controls, and what it reports** (Phase 3). Before the restore (which reloads the shadow page) the fork arms the shadow:
+
+- `shim.arm` installs a seeded `Math.random`, a virtual `Date` (a `Proxy`, so statics and `instanceof` work) and remembers the arming in the tab's sessionStorage, so the copy of the agent that runs first on the reloaded page installs them before app scripts. The seed is the parent's `session.start` hash; both seed and mode are written to `fork.start`.
+- If production ran with `--record-nondeterminism`, each click and fill result carries `nondet` (the values drawn during that command). The fork feeds them back per command (`shim.feed`); the shadow reports what it drew and was fed. A draw with nothing recorded falls back to the seeded generator and is evidence of nondeterminism, never silently absorbed.
+- If production ran with `--record-external <origin>`, each command records the named origins' `fetch` responses as blobs the command commits to; the fork switches the shadow to serve them (`external.arm` replay, `external.feed`). No match means the fetch fails; XHR and beacon to those origins are blocked. If the switch cannot be made the fork is refused.
+- `classify.mjs` then labels every difference (`volatile` / `nondeterministic` / `external` / `unknown`) with evidence. `reproduced` is true only when every difference is inside a declared volatile key.
+
+**Why recorded draws, not just seeded shims.** A seeded clock makes two replays equal each other, but not equal to a production run that read the wall clock; `replay-verify` compares against the recording. So the recording is the mechanism and the seed is the fallback.
+
+**IndexedDB autoIncrement: detect, not rewind.** The generator can only be reset by deleting and recreating the store, which bumps the database version and makes any app that opens a fixed version fail. A restore that would break the page it restores is worse than a reported drift, so the drift is measured after the restore and classified.
+
+## Causality
+
+Edges are `{cause, effect, kind, inferred}`. Recorded structure (`decided`, `resolved_by`, `released`, `state_after`, `flagged`, `retry_of`, `verifies`) is written by the relay. Two heuristics stay permanently inferred: `derived_from` (a written value first appeared in an earlier read, substring match, any page load) and `observes` (a read right after a write). They can be wrong in both directions and cannot be made sound from the outside, because whether a value influenced a decision lives in the caller (the model), which witnessloop does not see.
+
+One case the page agent can see directly: it returned a string in a read, and later a fill typed exactly that string, in the same page load. That is recorded as a separate edge kind, `value_flow` (`inferred: false`), from a per-load reply counter the agent puts on read and fill results. It is an *observed equality*, reported by an untrusted page: it shows the value was available and came back, not that the read caused the fill (a coincidence, or a value the caller already had, looks the same). Rules that keep the families apart: a heuristic edge is never promoted (a pair found by both keeps a `derived_from` with `inferred: true` and gets a separate `value_flow`); a pair found only by the heuristic gets no `value_flow`; a report with an unknown seq, another page load, a later read or malformed fields adds nothing. Click-driven flows have no recorded edge: a click carries no value the agent can match. The decision, then: keep the heuristics inferred for good, add the one recorded kind where the agent can observe it, and never let either be quoted as proof.
 
 ## Trust: seals, anchors, keys, access
 
@@ -85,3 +104,5 @@ The gate trusts the page's `data-wl-effect`. Everything here is detection or adv
 - `e2e-browser.test`: the four stories (bank, mailer, todo, shop) in a real headless browser, plus the fail-closed annotation check, a static drift check between `registry.mjs` and `inject.js`, and the connect-after-settle check.
 - `anchor`, `keys`, `approvers`, `auth`: each Phase 1 guarantee with its tamper and failure cases (rewrite-and-reseal, forged cert, revoked-key seal, replayed nonce, missing token, foreign Host and Origin, corrupt key file).
 - `observed`, `detect`, `lint`, `effects`, `policy`: Phase 2. `effects.test` keeps the pre-refactor profile functions as the reference for "output unchanged".
+- `redact`, `world-stores`, `shims`, `shims-browser`, `external`, `classify`, `replay-classes`, `value-flow`: Phase 3. Each has its control case (the same run without the feature, which must fail or differ): secrets present without `redactKeys`, a seeded clock that does not reproduce a wall-clock run, a live provider that answers differently.
+- Browser tests are CPU heavy; `npm test` runs test files two at a time. At the default concurrency on an 8-core machine the extra browser files produced timeouts (a different one each run) that vanish at two.

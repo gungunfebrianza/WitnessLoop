@@ -58,6 +58,7 @@ export function buildReport({ session, events, verify, causal, detections = null
     const by = {};
     for (const e of causal.edges) by[e.kind] = (by[e.kind] ?? 0) + 1;
     L.push('## Causality', '', `Edges: ${Object.entries(by).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}. Edges marked *inferred* are heuristics, not recorded facts.`, '');
+    for (const e of causal.edges.filter((x) => x.kind === 'value_flow').slice(0, 20)) L.push(`- #${e.effect} filled \`${e.detail.param}\` with a string the page agent had served in the read at #${e.cause} *(recorded observation of an exact match; not proof the read caused it)*`);
     for (const e of causal.edges.filter((x) => x.kind === 'derived_from').slice(0, 20)) L.push(`- #${e.effect} used \`${cell(e.detail.value)}\` (param ${e.detail.param}), first seen in the read at #${e.cause} *(inferred)*`);
     L.push('');
   }

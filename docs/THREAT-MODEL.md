@@ -24,6 +24,14 @@ and shown to follow from recorded causes"). This page says exactly how far that 
 | A policy that can never fire, or a `matches` that can stall the relay, is caught | `policy --dry-run` warns on shadowed rules (only when provable) and on backtracking-prone patterns; `matches` runs under a pattern-size, input-size and time cap and falls back to `require_approval` (or `deny` under a deny-by-default policy) instead of hanging or silently not matching | `test/policy.test.mjs` |
 | A profile's effect check cannot pass because it could not compute | `src/effects.mjs` building blocks return `ok:false` on a throw or a non-finite number; the bank and mailer profiles are built on them and return exactly what the hand-written versions did | `test/effects.test.mjs` (old and new compared over fixtures) |
 | A session reproduces | `replay-verify` restores the genesis checkpoint on a shadow app, re-runs every step, compares normalised step results and final world hash | first divergence reported |
+| A secret named in `profile.redactKeys` is not in any blob or exported bundle (world snapshots) | the relay redacts a snapshot where it becomes a blob; the state hash is over the redacted world; a malformed `redactKeys` stops the relay | secret absent from every blob for a storage key, a cookie, an IndexedDB field; the same run without `redactKeys` contains it; the live effect check still saw the real value (`test/redact.test.mjs`). Command params and results are NOT redacted: see limitation 6 |
+| A checkpoint says what it holds and what it cannot | `coverage` on every checkpoint event: captured stores, `notCaptured` (HttpOnly cookies, worker caches, ...), redacted count | `test/redact.test.mjs`, `test/world-stores.test.mjs` |
+| sessionStorage, `document.cookie` and service-worker registrations round-trip through capture and restore | captured beside localStorage and IndexedDB and part of what worlds are compared on | capture, mutate every store, restore, capture again: equal; restore to the empty world removes the worker, the cookies and the keys (real browser, `test/world-stores.test.mjs`) |
+| An IndexedDB `autoIncrement` generator that a restore could not rewind is reported, not hidden | the generator is read by an aborted probe (an abort rewinds it) and compared after restore; the drift is written into `fork.start` and the fork result | drift `{expected 4, actual 3}` reported and the restore not verified; no false alarm when nothing was deleted (`test/world-stores.test.mjs`) |
+| A replay can reproduce clock and random draws exactly, in a shadow only, without declaring them volatile | opt-in `--record-nondeterminism` records what the page drew from `Date.now`/`new Date()`/`Math.random` during each click and fill; the shadow is armed before its restore (so before page scripts), fed those values per command, disarmed after; the seed (from the parent's `session.start` hash) and mode go into `fork.start`; a page that cannot arm the shims still replays and the fork says `unavailable`; if recording was asked for and cannot be switched on, no session starts | todo page with `volatileKeys: []`: reproduces with a recording, does not without one and says the clock was seeded; production keeps the real clock; seed tamper caught by the bundle check (`test/shims.test.mjs`, `test/shims-browser.test.mjs`) |
+| A replay can be served third-party responses from a recording and never reaches the network for them | opt-in `--record-external <origin>`; fetch responses from named foreign origins become content-addressed blobs the command event commits to; verify checks each; the shadow serves them in order and a fetch with no matching recording fails, XHR/beacon to those origins are blocked; a shadow that cannot switch to replay mode refuses the fork | replay with the provider stopped reproduces and reports `replayed against recorded external responses`; an uncovered fetch and an XHR are refused and reported while the provider sees nothing; flipping a body byte or dropping the blob in a bundle fails verify (`test/external.test.mjs`) |
+| Every divergence in a replay is labelled, and only a declared volatile key can be "ok" | `src/classify.mjs`: `volatile`, `nondeterministic`, `external` or `unknown`, each with the evidence used; a raw difference outside a declared key is never ok; a counterfactual fork is not classified | `test/classify.test.mjs` (pure) and `test/replay-classes.test.mjs` (real pages: exact replay has none, seeded clock is `nondeterministic`, declared key is `volatile` and still reproduces, drift is `nondeterministic`, an unrecorded live provider is `unknown` not `external`) |
+| A recorded `value_flow` edge is kept apart from inferred ones | the page agent reports an exact string it served in a read and later saw filled, same page load; `derived_from`/`observes` stay `inferred: true` in every case | heuristic-only pairs get no `value_flow`; forged, cross-load, out-of-order or malformed reports add nothing (`test/value-flow.test.mjs`) |
 
 ## What is NOT proven
 
@@ -92,17 +100,49 @@ and shown to follow from recorded causes"). This page says exactly how far that 
    result of it is not on the chain. Reads have no write-ahead record (they change nothing) and are appended
    after dispatch. A begin appended by a compromised relay proves nothing; this is
    evidence for an honest relay that crashed, not against a dishonest one.
-5. **Replay fidelity.** `replay-verify` proves reproducibility *in a shadow copy*, under app-declared
-   `volatileKeys`. It does not re-run against production, and cannot reproduce effects that depend on the
-   outside world (third-party APIs, real email). Nondeterministic apps will report a divergence, which is
-   the honest answer.
-6. **World coverage.** A checkpoint is localStorage + IndexedDB + the app server state you expose through
-   the adapter. Cookies, sessionStorage, service workers, and external systems are not captured. IndexedDB
-   `autoIncrement` key generators cannot be rewound, so a restored store can assign different keys; the
-   agent warns in the `world.restore` reply.
+5. **Replay fidelity.** `replay-verify` proves reproducibility *in a shadow copy*. It does not re-run
+   against production. What it can and cannot hold fixed:
+   - *Declared volatile keys* are compared as equal but reported (`volatile`, ok). Anything else that
+     differs is a divergence and is labelled `nondeterministic`, `external` or `unknown` with the evidence;
+     `unknown` is the answer when nothing recorded explains it. The label is only as good as the evidence:
+     a request the observer does not record (a GET, a WebSocket) leaves no evidence, so a live provider
+     giving a new answer is `unknown`, not `external`.
+   - *Clock and randomness* are controlled only when the operator ran the production session with
+     `--record-nondeterminism`. Then `Date.now()`, `new Date()`, `Date()` and `Math.random()` calls made
+     during a click or fill are replayed value for value. Not covered: draws outside a command (page load,
+     timers after the command settled), references saved before the agent ran, `performance.now`,
+     `crypto.getRandomValues`, `Intl` clocks, and the order of concurrent draws. The agent must be the
+     first script on the page for the shims to be in place before app scripts. Without a recording the
+     shadow gets a seeded clock and the fork says `seeded`; that replay will not equal a wall-clock run.
+   - *Third parties* are replayed from a recording only for origins the operator named, only for `fetch`,
+     and only responses up to 256 KB; the request's query string and headers are not stored (a hash of
+     the query and body is used to match). A response served from the recording is what the provider said
+     then, not what it would say now, and the replay says so. Anything else that leaves the machine
+     (WebSocket, images, scripts, requests outside a command window, an unnamed origin) is not recorded,
+     and in a shadow armed for replay a request to a named origin without a match fails instead of being sent.
+     Bodies are recorded verbatim; only JSON bodies are subject to `redactKeys`, and only if the profile
+     lists the key.
+   - *IndexedDB `autoIncrement`* key generators cannot be rewound without recreating the store, which
+     bumps the database version and breaks apps that open a fixed version. So drift is measured, written
+     into `fork.start`, and a divergence in that store is labelled `nondeterministic`.
+   - A counterfactual fork (skip/override) differs on purpose and is not classified.
+6. **World coverage.** A checkpoint is localStorage, sessionStorage, cookies visible to `document.cookie`,
+   service-worker registration state, IndexedDB, and the app server state you expose through the adapter.
+   Each checkpoint lists what it does not hold (`coverage.notCaptured`): HttpOnly cookies, cookies whose
+   path does not cover the page, worker caches and worker-internal state, Cache Storage, live connections,
+   in-memory JavaScript state, other origins and frames, and any external system. Cookies are scoped by
+   host, not port: restoring into a shadow tab **in the same browser profile as production** changes
+   production's cookie jar, so shadows must use their own profile (the stage does). Old sessions' stored
+   state hashes were computed without the new stores, so forking one may report `restoreVerified: false`.
+   `redactKeys` keeps named values out of world snapshots only; command params and results (a value typed
+   with `dom.fill`, a read result) are recorded as they are, and a redacted world restores as `[redacted]`.
 7. **Causal edges.** `retry_of`, `decided`, `released`, `state_after`, `flagged` are recorded structure.
-   `derived_from` (a written value first seen in an earlier read) and `observes` are heuristics, marked
-   `inferred: true`, and must not be quoted as proof of influence.
+   `value_flow` is recorded by the page agent: it saw a string it had served in a read come back in a
+   later fill, exact match, same page load. That is an observed equality reported by an untrusted page,
+   not proof that the read caused the fill (a coincidence or a value the caller already knew looks the
+   same), and click-driven flows have no recorded edge. `derived_from` (substring match across reads,
+   any page load) and `observes` stay heuristics, marked `inferred: true`, are never promoted to
+   recorded, and must not be quoted as proof of influence. See `docs/DESIGN.md`.
 8. **Bisect** evaluates an app-defined invariant on stored checkpoints; `--search binary` assumes breakage
    is monotone. It finds the first *recorded* state that fails, not a root cause in code.
 9. **No `eval`, no arbitrary script.** By design; but `dom.click`/`dom.fill` can still drive any UI the

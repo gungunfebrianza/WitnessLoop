@@ -16,6 +16,13 @@ export const COMMANDS = {
   'dom.click': { effect: 'dynamic' },
   'dom.fill': { effect: 'reversible' },
   'page.reload': { effect: 'reversible' },
+  // shadow-replay and recording controls: the relay drives them, callers cannot
+  'shim.arm': { effect: 'reversible', internal: true },
+  'shim.feed': { effect: 'reversible', internal: true },
+  'shim.disarm': { effect: 'reversible', internal: true },
+  'shim.record': { effect: 'reversible', internal: true },
+  'external.arm': { effect: 'reversible', internal: true },
+  'external.feed': { effect: 'reversible', internal: true },
   'world.capture': { effect: 'read', internal: true },
   'world.restore': { effect: 'reversible', internal: true },
 };

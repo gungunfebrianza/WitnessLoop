@@ -31,14 +31,16 @@ async function waitAgent(client, name, timeoutMs = 10000) {
   throw new Error(`agent "${name}" never connected`);
 }
 
-export async function startStage(appName, { policy, approvalTimeoutMs = 15000 } = {}) {
-  const def = APPS[appName];
+// def: { start, profile, policy } runs an app that is not one of the examples (tests bring their own fixture pages)
+export async function startStage(appName, { policy, approvalTimeoutMs = 15000, def: custom, relayOptions = {} } = {}) {
+  const def = custom ?? APPS[appName];
   if (!def) throw new Error(`unknown app "${appName}" (bank, mailer, todo, shop)`);
-  const { profile } = await import(`../${appName}/profile.mjs`);
+  const profile = custom ? custom.profile : (await import(`../${appName}/profile.mjs`)).profile;
   const approverKey = generateKey();
   const relay = await createRelay({
     port: 0, profile, approvalTimeoutMs, approvers: [fingerprint(approverKey.publicKey)],
     policy: policy ?? (def.policy ? readPolicy(def.policy) : { default: 'allow', rules: [] }),
+    ...relayOptions,
   });
   await relay.listen();
   const client = createClient({ port: relay.port, approverKey, token: relay.token });

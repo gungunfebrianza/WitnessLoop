@@ -54,7 +54,7 @@ async function serve(a) {
     policy: a.policy ? JSON.parse(fs.readFileSync(a.policy, 'utf8')) : null, profile,
     checkpoints: a.checkpoints ?? 'mutating', approvalTimeoutMs: a.approvalTimeoutMs ? Number(a.approvalTimeoutMs) : 300000,
     anchorSink: a.anchorSink ? fileSink(a.anchorSink) : null, anchorFile: a.anchorSink ?? null,
-    approvers: a.approver ?? [], allowUnsignedApprovals: !!a.allowUnsignedApprovals,
+    approvers: a.approver ?? [], allowUnsignedApprovals: !!a.allowUnsignedApprovals, recordNondeterminism: !!a.recordNondeterminism, externalOrigins: a.recordExternal ?? [],
   });
   for (const w of lintPolicy(relay.getPolicy())) console.warn(`policy warning: ${w.message}`);
   // the token file is written before the relay accepts anything, and a failure to protect it stops the start

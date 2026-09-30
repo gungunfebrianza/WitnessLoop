@@ -1,8 +1,12 @@
 // Causal graph over one session's events. Edges are { cause, effect, kind, inferred }.
-//   recorded (inferred:false)  decided, resolved_by, released, state_after, flagged, retry_of, verifies
+//   recorded (inferred:false)  decided, resolved_by, released, state_after, flagged, retry_of, verifies,
+//                              value_flow (the page agent saw a string it had served in a read typed back by a later fill, exact match,
+//                              same page load: an observed equality, not proof that the read caused the fill; the page itself is untrusted)
 //   inferred (inferred:true)   derived_from (a written value first appeared in an earlier read),
 //                              observes (a read right after a write, on a different target)
-// Inferred edges are heuristics and are labelled as such; nothing downstream presents them as proof.
+// Inferred edges are heuristics and are labelled as such; nothing downstream presents them as proof. The two families stay separate:
+// a pair the heuristic finds keeps its derived_from edge even when a value_flow edge also exists, and a value_flow edge is only ever
+// added from what the page agent recorded, never promoted from a heuristic.
 import { canon } from './canon.mjs';
 
 const SKIP_KEYS = new Set(['selector', 'nth', 'timeoutMs', 'ms', 'text', 'gone']);
@@ -52,6 +56,7 @@ export function buildCausal(events) {
   }
 
   const reads = [];
+  const flowReads = new Map(); // "<load>:<seq>" -> idx of the read the page agent served that reply for
   let lastWrite = null;
   commands.forEach((c) => {
     const d = c.data;
@@ -60,6 +65,14 @@ export function buildCausal(events) {
     for (let i = commands.indexOf(c) - 1; i >= 0; i--) {
       const p = commands[i];
       if (p.ok === 0 && p.type === c.type && canon(p.data.params) === canon(d.params)) { add(p.idx, c.idx, 'retry_of'); break; }
+    }
+    const flow = d.result?.flow;
+    if (isRead && Number.isInteger(flow?.seq) && typeof flow?.load === 'string') flowReads.set(`${flow.load}:${flow.seq}`, c.idx);
+    if (!isRead && typeof flow?.load === 'string' && Array.isArray(flow.from)) {
+      for (const f of flow.from.slice(0, 20)) {
+        const from = Number.isInteger(f?.seq) ? flowReads.get(`${flow.load}:${f.seq}`) : undefined;
+        if (from !== undefined) add(from, c.idx, 'value_flow', false, { param: String(f.param).slice(0, 60), basis: 'exact string the page agent served in this read, seen again in this fill (same page load)' });
+      }
     }
     if (isRead) {
       if (lastWrite) {

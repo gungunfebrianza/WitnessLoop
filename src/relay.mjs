@@ -12,9 +12,10 @@ import { acceptWebSocket } from './ws.mjs';
 import { COMMANDS, classify, timeoutFor } from './registry.mjs';
 import { validatePolicy, DEFAULT_POLICY } from './policy.mjs';
 import { gate, Approvals } from './gate.mjs';
-import { captureWorld, restoreWorld, stateHash } from './world.mjs';
+import { captureWorld, restoreWorld, stateHash, redactWorld, validateRedactKeys } from './world.mjs';
 import { installAnalysisRoutes } from './routes-analysis.mjs';
 import { installDashboardRoutes } from './dashboard.mjs';
+import { validateOrigins, cleanExternal } from './external.mjs';
 
 export const DEFAULT_PORT = 8974;
 const DASHBOARD_HTML = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dashboard', 'index.html');
@@ -36,8 +37,9 @@ export class HttpError extends Error {
 
 export async function createRelay({
   dbPath = ':memory:', keyPath = null, port = DEFAULT_PORT, host = '127.0.0.1', policy = null, profile = {},
-  approvalTimeoutMs = 300000, checkpoints = 'mutating', now, anchorSink = null, anchorFile = null, approvers = [], allowUnsignedApprovals = false, token = newToken(),
+  approvalTimeoutMs = 300000, checkpoints = 'mutating', now, anchorSink = null, anchorFile = null, approvers = [], allowUnsignedApprovals = false, token = newToken(), recordNondeterminism = false, externalOrigins = [],
 } = {}) {
+  const extOrigins = validateOrigins(externalOrigins);
   if (!token) throw new Error('createRelay needs a token: an unauthenticated relay is not an option');
   const key = keyPath ? loadOrCreateKey(keyPath) : generateKey();
   if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
@@ -48,6 +50,7 @@ export async function createRelay({
   let nextId = 0;
   let currentPolicy = validatePolicy(policy ?? DEFAULT_POLICY);
   const volatileKeys = profile.volatileKeys ?? [];
+  const redactKeys = validateRedactKeys(profile.redactKeys);
 
   // ---------- agent link ----------
   const agentInfo = (name) => {
@@ -95,20 +98,33 @@ export async function createRelay({
   const bridge = { dispatch, agentInfo, waitForReconnect };
 
   // ---------- sessions and checkpoints ----------
+  // The one place a snapshot becomes a blob: profile.redactKeys is applied here, so a secret never reaches the ledger or a bundle.
+  // The hash is over the redacted world (a restore of it recaptures and redacts to the same thing); checks that ran on the live capture saw the real one.
+  // coverage says what the snapshot holds, what it cannot, and how many values were redacted.
+  function storeWorld(world) {
+    const r = redactWorld(world, redactKeys);
+    const captured = ['localStorage', 'sessionStorage', 'cookies', 'serviceWorkers', 'indexedDB'].filter((k) => r.world.page?.[k] !== undefined).concat(r.world.server != null ? ['server'] : []);
+    return { world_hash: ledger.putBlob(r.world), state_hash: stateHash(r.world, volatileKeys), coverage: { captured, notCaptured: r.world.page?.meta?.notCaptured ?? [], redacted: r.count } };
+  }
   async function checkpoint(sessionId, label, afterIdx = null) {
     const session = ledger.getSession(sessionId);
     const world = await captureWorld(bridge, session.agent);
-    const world_hash = ledger.putBlob(world);
-    return ledger.append(sessionId, {
-      kind: 'checkpoint', actor: 'relay',
-      data: { label, after_idx: afterIdx, world_hash, state_hash: stateHash(world, volatileKeys) },
-    });
+    return ledger.append(sessionId, { kind: 'checkpoint', actor: 'relay', data: { label, after_idx: afterIdx, ...storeWorld(world) } });
   }
 
   async function startSession({ goal = '', actor = 'agent', agent = 'default', parent = null, meta = {} } = {}) {
     if (!agents.has(agent)) throw new HttpError(409, `agent "${agent}" is not connected`);
     if (ledger.activeSession(agent)) throw new HttpError(409, `agent "${agent}" already has an active session`);
-    const id = ledger.startSession({ goal, actor, agent, parent, meta });
+    // What this session records beyond the command stream is written into session.start, so a replay knows what it can rely on.
+    // A recording the operator asked for that cannot be switched on refuses the session: better no session than one that claims a record it lacks.
+    const recording = !meta.fork && (recordNondeterminism || extOrigins.length) ? { ...(recordNondeterminism ? { nondeterminism: true } : {}), ...(extOrigins.length ? { external: extOrigins } : {}) } : null;
+    if (recording?.nondeterminism) {
+      try { await dispatch(agent, 'shim.record', { on: true }); } catch (e) { throw new HttpError(409, `cannot record nondeterminism on agent "${agent}": ${e.message}`); }
+    }
+    if (recording?.external) {
+      try { await dispatch(agent, 'external.arm', { mode: 'record', origins: extOrigins }); } catch (e) { throw new HttpError(409, `cannot record external responses on agent "${agent}": ${e.message}`); }
+    }
+    const id = ledger.startSession({ goal, actor, agent, parent, meta: { ...meta, ...(recording ? { recording } : {}) } });
     if (checkpoints !== 'none') await checkpoint(id, 'genesis');
     return id;
   }
@@ -159,9 +175,16 @@ export async function createRelay({
     // writes the click made on the network, as the page's observer saw them (a click whose reply was lost keeps what was pushed before the page went)
     const observed = cleanEffects(result?.observed_effects ?? lost);
     if (result && typeof result === 'object' && 'observed_effects' in result) result = { ...result, observed_effects: observed };
+    // third-party responses the page saw during this command (opt-in): each body becomes its own blob the command event commits to by hash
+    let external = null;
+    if (result && typeof result === 'object' && 'external' in result) {
+      const { external: raw, ...rest } = result;
+      result = rest;
+      external = cleanExternal(raw, extOrigins).map(({ body_b64, ...meta }) => ({ ...meta, ...(body_b64 !== null ? { response_hash: ledger.putBlob({ body_b64 }) } : {}) }));
+    }
     const cmd = ledger.append(sessionId, {
       kind: 'command', actor, type, effect, ok: !error,
-      data: { params, ...(describe ? { describe } : {}), ...(intentIdx !== null ? { intent_idx: intentIdx } : {}), ...(begin ? { begin_idx: begin.idx } : {}), result, error, ...(lost?.length ? { observed_effects: observed } : {}), ms: Date.now() - t0 },
+      data: { params, ...(describe ? { describe } : {}), ...(intentIdx !== null ? { intent_idx: intentIdx } : {}), ...(begin ? { begin_idx: begin.idx } : {}), result, error, ...(lost?.length ? { observed_effects: observed } : {}), ...(external?.length ? { external } : {}), ms: Date.now() - t0 },
     });
 
     // Detection after the fact: the request has already gone. A write under a reversible or unannotated label is what the gate could not see.
@@ -178,8 +201,7 @@ export async function createRelay({
     if (wantsCheckpoint || (effect === 'irreversible' && profile.effectCheck)) {
       after = await captureWorld(bridge, agent);
       if (wantsCheckpoint) {
-        const world_hash = ledger.putBlob(after);
-        ledger.append(sessionId, { kind: 'checkpoint', actor: 'relay', data: { label: 'post', after_idx: cmd.idx, world_hash, state_hash: stateHash(after, volatileKeys) } });
+        ledger.append(sessionId, { kind: 'checkpoint', actor: 'relay', data: { label: 'post', after_idx: cmd.idx, ...storeWorld(after) } });
       }
     }
 

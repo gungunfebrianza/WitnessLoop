@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>autoIncrement fixture</title></head>
+<body>
+<input id="new" name="title" autocomplete="off"> <button id="add" type="button">Add</button>
+<ul id="list"></ul>
+<script src="/witnessloop/inject.js"></script>
+<script>
+  // IndexedDB "app" / store "items" { id (autoIncrement), title }: the store a restore cannot fully rewind
+  const open = () => new Promise((res, rej) => {
+    const r = indexedDB.open('app', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('items', { keyPath: 'id', autoIncrement: true });
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  const tx = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const t = db.transaction('items', mode); const out = fn(t.objectStore('items'));
+      t.oncomplete = () => { db.close(); res(out && out.result !== undefined ? out.result : out); }; t.onerror = () => rej(t.error);
+    });
+  };
+  async function render() {
+    const items = await tx('readonly', (s) => s.getAll());
+    document.getElementById('list').innerHTML = items.map((t) => `<li data-id="${t.id}"><span class="title">${t.title}</span><button class="del">x</button></li>`).join('');
+  }
+  document.getElementById('add').addEventListener('click', async () => {
+    const title = document.getElementById('new').value.trim();
+    if (!title) return;
+    await tx('readwrite', (s) => s.add({ title }));
+    document.getElementById('new').value = '';
+    await render();
+  });
+  document.getElementById('list').addEventListener('click', async (ev) => {
+    const li = ev.target.closest('li'); if (!li || !ev.target.classList.contains('del')) return;
+    await tx('readwrite', (s) => s.delete(Number(li.dataset.id)));
+    await render();
+  });
+  render();
+</script>
+</body></html>

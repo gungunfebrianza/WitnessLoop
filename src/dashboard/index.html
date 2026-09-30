@@ -258,7 +258,7 @@ function vCausal(d) {
     });
     svg.append(c);
   });
-  return card('Causal graph', svg, h('p', { class: 'legend' }, h('span', null, '━ recorded structure'), h('span', { style: 'color:var(--infer)' }, '╍ inferred (derived_from, observes): heuristics, never quote as proof of influence')), info);
+  return card('Causal graph', svg, h('p', { class: 'legend' }, h('span', null, '━ recorded structure (value_flow: the page agent saw an exact value it served come back; an observed equality, not proof of cause)'),h('span', { style: 'color:var(--infer)' }, '╍ inferred (derived_from, observes): heuristics, never quote as proof of influence')), info);
 }
 
 function vFork(d) {

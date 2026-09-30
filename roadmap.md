@@ -153,6 +153,21 @@ Test run at the end of Phase 2: 142 tests, 142 pass, three consecutive `npm test
 
 Still open: no prevention of undeclared effects (only the gate on annotated ones); the observer misses WebSocket traffic, timers after the click settles, a `fetch` saved before the agent loaded, workers and frames; the offline detector needs the adapter and `mutating` checkpoints and only sees app-server state; body hashes of low-entropy bodies can be guessed offline; `lint-page` cannot see JavaScript-wired controls; shadowing warnings only cover provable cases and `matches` limits are wall-clock (a machine stalled twice can produce a spurious limit hit, which resolves to `require_approval`).
 
+## Phase 3 status
+
+Implemented and tested. Replay claims are stated in `docs/THREAT-MODEL.md` limitations 5 to 7: what is held fixed, what is only reported.
+
+- **3.1** sessionStorage, `document.cookie` and service-worker registrations captured and restored (real-browser round trip per store); every checkpoint records `coverage` including `notCaptured` (HttpOnly cookies, worker caches, ...). `profile.redactKeys` redacts where snapshots become blobs; a secret is absent from every bundle blob (control without it contains the secret). Tests: `redact`, `world-stores`.
+- **3.4** autoIncrement: chose detect over rewind (rewinding needs a store recreate and version bump). The generator is read by an aborted probe; drift is written to `fork.start` and classified. Tests: `world-stores`, `replay-classes`.
+- **3.2** shims: `Date`/`Math.random` shadow-only, armed before the restore reload, seed from the parent's `session.start` hash in `fork.start`. Seeded shims alone cannot equal a wall-clock production run, so `serve --record-nondeterminism` (opt-in) records draws per click/fill and the shadow replays them. Todo page with `volatileKeys: []` reproduces with a recording and does not without. Tests: `shims`, `shims-browser`.
+- **3.3** `serve --record-external <origin>` (default off): fetch responses from named foreign origins become blobs the command commits to, verified in bundles; the shadow serves them, an uncovered fetch fails and XHR/beacon are blocked, a shadow that cannot switch refuses the fork; result says `replayed against recorded external responses`. Verified with the provider stopped. Test: `external`.
+- **3.5** `src/classify.mjs`: each divergence is `volatile`/`nondeterministic`/`external`/`unknown` with evidence; only a declared volatile key is ever ok; `reproduced` requires that. A live provider without a recording is `unknown`, not `external`. Tests: `classify`, `replay-classes`.
+- **3.6** decision in `docs/DESIGN.md`: keep `derived_from`/`observes` inferred permanently; add a separate recorded `value_flow` edge from what the page agent observes (exact served string later filled, same page load). Never promoted from a heuristic. Test: `value-flow`.
+
+Test run: 202 tests, 202 pass at `--test-concurrency=2` (`npm test`). At Node's default concurrency on this 8-core machine the added browser files caused load timeouts in a different unrelated test each run (up to 4 per run), all passing when run serially; the script now caps concurrency. That is a test-infrastructure fix, not a loosened assertion.
+
+Still open: shims miss draws outside a command, saved references, `performance.now`, `crypto.getRandomValues`; external recording is fetch-only, 256 KB per body, named origins, and JSON-only redaction; classification is only as good as recorded evidence; cookies are host-scoped so a shadow in the same browser profile would alter production's jar; command params/results are not redacted; `value_flow` is an observed equality from an untrusted page, and click-driven flows have none; old sessions' state hashes lack the new stores.
+
 ## Dashboard status
 
 Shipped: `src/dashboard.mjs` (analytics + `/dashboard/*` routes), `src/dashboard/index.html` (served at `/dashboard`), tests in `test/dashboard.test.mjs` and a real-browser render test `test/dashboard-browser.test.mjs`. Views: chain health, tamper demo, timeline, decision funnel, approval latency, repeated intents, bisect + invariant strip, state diff, causal graph, fork compare, policy what-if, rule hit map, agent comparison, recorded overhead.
@@ -464,6 +479,78 @@ must be listed as not captured, and divergence must be reported, never hidden.
 
 Update THREAT-MODEL.md limitations 5, 6 and 7 to match. Add a "Phase 3 status" note to roadmap.md.
 ```
+
+Here is the result from claude code :
+
+```
+I fixed three of the limitations. I did not fix the rest, because they are either inherent or a much larger change. npm test now shows 145 of 145 passing on three consecutive runs, and the changes are committed and pushed to main.
+
+Fixed
+
+- Corrupt key file: a key file that exists but is corrupt or incomplete now stops the start with an error and is left untouched. Only a missing file creates a key. Silently replacing it would have orphaned every earlier seal. Test in test/keys.test.mjs.
+- Origin and Host check: the relay now only serves loopback Host names (it answers 421 otherwise), which blocks DNS rebinding. It refuses HTTP requests with a foreign Origin (403), even with a valid token. The dashboard and the CLI still work. The agent WebSocket is not Origin-checked, because the app page's origin is legitimately different, so the token still guards it. Test in test/auth.test.mjs.
+- Anchor status in the dashboard: the Integrity tab now shows an anchor row per session when the relay runs with --anchor-sink. It reads none, unanchored, ok or failed. An unreadable or mismatching anchor file shows as failed, and a session with no anchor shows as unanchored. It is computed by the real verifier. Test in test/anchor.test.mjs.
+
+Other changes
+
+- Threat model and README: updated to match the three fixes.
+- Existing WebSocket test: it sent Host: x, which is now rejected earlier, so I gave it a loopback Host.
+- Lint test flakiness: the lint test failed under load with the Windows libuv abort. It now uses a plain node:http fetch stand-in for its local server.
+
+Still open
+
+- Prevention: nothing blocks an undeclared effect before it happens. The gate still trusts data-wl-effect.
+- Observer blind spots: WebSocket traffic, requests after the click settles, workeseen.
+- Shared token and approver keys: the relay token is still one shared secret, and approver and token files are readable by the same OS user.
+- Anchor sink: a file sink on the same machine protects nothing against whoever holds that machine.
+- Agent token in the WebSocket URL: browsers can't set headers on a WebSocket, so the agent link still carries the token as a query parameter.
+- TLS: the relay is still plain HTTP on localhost.
+- command.begin: it still covers irreversible commands only.
+- Body hashes: low-entropy bodies are still guessable offline.
+- lint-page: it still can't see JavaScript-wired controls.
+
+Say if you want me to take one of the larger ones next. command.begin for reversible commands is the most tractable.
+
+command.begin now covers reversible writes too, and it's committed and pushed as 43e3722. npm test passed 146 of 146 on the last three runs.
+
+Every state-changing command (dom.click, dom.fill, page.reload) now writes a begin event before dispatch, and reads still don't. If the begin can't be written, nothing is dispatched. A lost result shows up in verify as an unresolved dispatch, a warning by default and an error under --strict. This was the "reversible commands aren't covered" limitation, so it is now closed in the threat model and roadmap.
+
+Effect on the demo numbers: the bank demo now has 65 events (sealed through #64), and the first bad event moved from #19 to #23. I updated the README, paper.md and the dashboard browser test to match. Those were the stale figures I flagged earlier.
+
+Tests: one new test in test/gate-relay.test.mjs covers a failed begin for a reversible fill, a lost result, and reads getting no begin. I changed four existing tests, and none was weakened:
+- The write sequence now includes command.begin.
+- Two lookups that matched "first event of type dom.fill" now filter on kind === 'command'. They were finding the begin event instead.
+- The click-begin failure test now fails only the click's begin, since the fills before it would otherwise fail too.
+
+I also made the dashboard tests wait for the session button instead of assuming it is already drawn. It was flaking under load, as before.
+
+Still open (the remaining items are unchanged from my last summary; none of them are things I can close in code):
+- Nothing blocks an undeclared effect before it happens.
+- The observer misses WebSocket traffic and requests after the click settles.
+- The relay token is one shared secret, and approver and token files are readable by the same OS user.
+- The anchor sink on the same machine protects nothing against its holder.
+- The agent token travels in the WebSocket URL.
+- The relay is plain HTTP on localhost.
+- Body hashes of low-entropy bodies are guessable.
+- lint-page can't see JavaScript-wired controls.
+
+docs/DESIGN.md
+- Architecture diagram: shows the auth layer and the command.begin step.
+- Event table: now has command.begin, key.rotate and key.revoke. The intent, decision, command and flag rows cover the new fields, including the undeclared_effect flag type.
+- Gate section: covers signed approvals, write-ahead and the policy caps and dry-run.
+- New "Trust" section: anchors, key rotation, and the Host, Origin and token checks.
+- New "Detecting what the gate cannot see" section: observer, detector, linter and effect checks.
+- Testing list: covers the new test files and the shop story.
+
+README.md
+- The test count is now 146, and the "unresolved dispatches" sentence covers all state-changing commands.
+- It mentions the Host and Origin checks and lists the shop demo.
+- I added an npm run demo:shop script to package.json so the README's shop line has a script to point at.
+
+Already updated earlier and rechecked against the code: docs/THREAT-MODEL.md, roadmap.md (Phase 1 and Phase 2 status), and the demo numbers in the README and paper.md.
+```
+
+
 
 ### Prompt: Phase 4 (real agents and real workloads)
 
