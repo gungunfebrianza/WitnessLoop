@@ -138,7 +138,7 @@ function vWorld(d) {
   ser.forEach((x, i) => { let acc = 0; keys.forEach((k) => { const v = x.parts[k] ?? 0; stack.append(s('rect', { x: X(i) - bw / 2, y: Y(acc + v), width: bw, height: Math.max(0, Y(acc) - Y(acc + v)), fill: col(k), 'fill-opacity': .8 }, s('title', {}, `checkpoint #${x.idx} (after command #${x.afterIdx}): ${k} = ${v} ${unit}`))); acc += v; });
     stack.append(s('text', { x: X(i) - 8, y: H - 10 }, (x.afterIdx == null ? 'start' : '#' + x.afterIdx))); });
   if (last.expected != null) stack.append(s('line', { x1: L, x2: W - R, y1: Y(last.expected), y2: Y(last.expected), stroke: 'var(--ink)', 'stroke-dasharray': '5 3' }), s('text', { x: W - R - 90, y: Y(last.expected) - 4 }, 'expected ' + last.expected));
-  const devs = ser.map((x) => (x.expected == null ? 0 : x.total - x.expected)); const dmax = Math.max(1, ...devs.map(Math.abs)); const DH = 140; const mid = DH / 2;
+  const devs = ser.map((x) => x.deviation ?? (x.expected == null ? 0 : x.total - x.expected)); const dtitle = last.deviationTitle || 'Deviation from expected total'; const noun = last.itemsNoun || 'items'; const cols = last.itemCols || ['amount', 'flagged']; const dmax = Math.max(1, ...devs.map(Math.abs)); const DH = 140; const mid = DH / 2;
   const dev = s('svg', { viewBox: `0 0 ${W} ${DH}` });
   dev.append(s('line', { x1: L, x2: W - R, y1: mid, y2: mid, stroke: 'currentColor', 'stroke-opacity': .4 }), s('text', { x: 4, y: mid + 3 }, '0'), s('text', { x: 4, y: 12 }, '+' + dmax), s('text', { x: 4, y: DH - 4 }, '-' + dmax));
   devs.forEach((v, i) => { const hgt = Math.abs(v) / dmax * (mid - 10); dev.append(s('rect', { x: X(i) - bw / 2, y: v >= 0 ? mid - hgt : mid, width: bw, height: Math.max(v === 0 ? 2 : 1, hgt), fill: v === 0 ? 'var(--ok)' : 'var(--bad)' }, s('title', {}, `checkpoint #${ser[i].idx}: total ${ser[i].total}, deviation ${v} ${unit}`)), s('text', { x: X(i) - 8, y: DH - 4 }, (ser[i].afterIdx == null ? 'start' : '#' + ser[i].afterIdx))); });
@@ -147,10 +147,10 @@ function vWorld(d) {
   return h('div', null,
     card(last.title + ' by checkpoint', stack, h('p', { class: 'legend' }, keys.map((k) => h('span', null, h('i', { class: 'dot', style: 'background:' + col(k) }, ''), k))),
       h('p', { class: 'note' }, 'x axis: the command each checkpoint was taken after. Values are ' + (unit || 'raw units') + ', read from the recorded world snapshots, not from the running app.')),
-    card('Deviation from expected total', dev, h('p', null, firstBad < 0 ? badge(true, 'total matches expected at every checkpoint', '') : [badge(false, '', 'total off by ' + devs[firstBad] + ' ' + unit + ' from checkpoint after command #' + ser[firstBad].afterIdx), ' final deviation ' + devs[devs.length - 1] + ' ' + unit]),
-      h('p', { class: 'note' }, 'This is the invariant drawn as a number. The Incident tab shows the same first failure through bisect.')),
-    items.length ? card('Every transfer, and what it lost', table(['transfer', '#amount', '#lost'], items.map((x) => [x.label, x.amount, x.delta ? h('b', { style: 'color:var(--bad)' }, x.delta) : 0])),
-      h('p', { class: 'note' }, lost.length + ' of ' + items.length + ' transfers lost money; total lost ' + lost.reduce((a, x) => a + x.delta, 0) + ' ' + unit + '.')) : null);
+    card(dtitle, dev, h('p', null, firstBad < 0 ? badge(true, 'no deviation at any checkpoint', '') : [badge(false, '', 'off by ' + devs[firstBad] + ' ' + unit + ' from the checkpoint after command #' + ser[firstBad].afterIdx), ' final deviation ' + devs[devs.length - 1] + ' ' + unit]),
+      h('p', { class: 'note' }, last.deviationNote || 'This is the invariant drawn as a number. The Incident tab shows the same first failure through bisect.')),
+    items.length ? card(last.itemsTitle || 'Items', table(['item', '#' + cols[0], '#' + cols[1]], items.map((x) => [x.label, x.amount, x.delta ? h('b', { style: 'color:var(--bad)' }, x.delta) : 0])),
+      h('p', { class: 'note' }, lost.length + ' of ' + items.length + ' ' + noun + ' flagged; sum ' + lost.reduce((a, x) => a + x.delta, 0) + ' ' + unit + '.')) : null);
 }
 
 function vIntegrity(d) {

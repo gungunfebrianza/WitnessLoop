@@ -12,7 +12,7 @@ export const profile = {
   // What the dashboard's world tab draws at each checkpoint: where the money is, and whether it adds up.
   // items: every transfer so far, with the cents it silently lost (fee charged minus fee booked).
   metrics: (world) => ({
-    title: 'Money', unit: 'cents',
+    title: 'Money', unit: 'cents', itemsTitle: 'Every transfer, and what it lost', itemsNoun: 'transfers', itemCols: ['amount', 'lost'],
     parts: { ...world.server.balances, fees: world.server.fees },
     total: totalMoney(world.server), expected: INITIAL_TOTAL,
     items: world.server.txs.map((tx) => ({ label: `#${tx.id} ${tx.from} -> ${tx.to} ${fmt(tx.cents)}`, amount: tx.cents, delta: -(tx.fee - feeFor(tx.cents).booked) })),

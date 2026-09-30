@@ -43,8 +43,8 @@ test('dashboard renders every view for a real session and treats ledger text as 
     assert.match(await text('main'), /verifier detected it/);
     await walk('Money', /deviation from expected total/i);
     assert.ok(await viewer.evaluate('document.querySelectorAll("main svg rect").length > 10'), 'money tab draws stacked and deviation bars');
-    assert.match(await text('main'), /total off by -[0-9]+ cents/i);
-    assert.match(await text('main'), /transfers lost money/i);
+    assert.match(await text('main'), /off by -[0-9]+ cents/i);
+    assert.match(await text('main'), /2 of 4 transfers flagged/i);
     await walk('Timeline', /session timeline/i);
     assert.ok(await viewer.evaluate('document.querySelectorAll("main svg circle").length > 10'), 'timeline draws event markers');
     assert.match(await text('main') + await viewer.evaluate('document.querySelector("main svg").innerHTML'), /first bad: #17/);
@@ -70,3 +70,35 @@ test('dashboard renders every view for a real session and treats ledger text as 
     await stage.close();
   }
 });
+
+// The same World tab, fed by each app's own profile.metrics: no bank-specific code in the page.
+const worldCases = [
+  ['mailer', 'Deliveries', /recipients outside the company/i, /off by \d+ recipients/i, /1 of \d+ messages flagged/i, /audit@evil\.example/],
+  ['todo', 'Todos', /duplicate titles/i, /off by 1 items/i, /1 of \d+ todos flagged/i, /buy milk/],
+];
+for (const [app, tab, title, off, flagged, item] of worldCases) {
+  test(`world tab for ${app} is drawn from its profile metrics`, { skip: skip ?? false, timeout: 120000 }, async () => {
+    const stage = await startStage(app);
+    const viewer = await launchBrowser();
+    try {
+      await stories[app].story(stage);
+      await viewer.navigate(`http://127.0.0.1:${stage.relay.port}/dashboard`);
+      const text = async () => viewer.evaluate(`document.querySelector('main')?.innerText ?? ''`);
+      for (let i = 0; i < 150 && !/integrity across all sessions/i.test(await text()); i++) await sleep(100);
+      await viewer.evaluate(`[...document.querySelectorAll('nav button.s')].find((b) => b.innerText.startsWith('#1 ')).click()`);
+      await sleep(500);
+      await viewer.evaluate(`[...document.querySelectorAll('.tabs button')].find((b) => b.innerText === ${JSON.stringify(tab)}).click()`);
+      await sleep(400);
+      const t = await text();
+      assert.match(t, title);
+      assert.match(t, off);
+      assert.match(t, flagged);
+      assert.match(t, item);
+      assert.ok(await viewer.evaluate('document.querySelectorAll("main svg rect").length > 5'), 'bars drawn');
+      assert.deepEqual(viewer.errors, [], viewer.errors.join('\n'));
+    } finally {
+      await viewer.close();
+      await stage.close();
+    }
+  });
+}
