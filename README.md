@@ -27,8 +27,8 @@ node examples/agents/demo.mjs bank --hold   # keep everything running and open t
 `demo:bank` prints, from a real headless browser:
 
 ```
-2. Ledger chain verified: true (49 events, sealed through #48).
-3. bisect: first bad event is #17 ({"amount":"33.33","memo":"","to":"carol"}) - money not conserved: total 174999 != 175000 (-1 cents); approved by policy.
+2. Ledger chain verified: true (65 events, sealed through #64).
+3. bisect: first bad event is #23 ({"amount":"33.33","memo":"","to":"carol"}) - money not conserved: total 174999 != 175000 (-1 cents); approved by policy.
 4. fork onto the SHADOW app under a patched boundary: 2 step(s) refused; production untouched.
    production total 174998 vs shadow total 175000 (must be 175000).
 6. exported bundle verifies offline: true; flipping one payload byte at event #2 is caught: true.

@@ -32,7 +32,7 @@ test('bisect names the first transfer that broke conservation, who approved it, 
     assert.equal(r.firstBad.command.type, 'dom.click');
     assert.match(r.firstBad.why, /money not conserved.*-1 cents/);
     assert.equal(r.firstBad.approvedBy, 'policy');
-    const amountFill = (await client.events(sid)).filter((e) => e.type === 'dom.fill' && e.data.params.selector === '#amount').find((e) => e.data.params.value === '33.33');
+    const amountFill = (await client.events(sid)).filter((e) => e.kind === 'command' && e.type === 'dom.fill' && e.data.params.selector === '#amount').find((e) => e.data.params.value === '33.33');
     assert.ok(r.firstBad.causes.some((c) => c.idx === amountFill.idx) || r.firstBad.commandIdx > amountFill.idx);
     assert.ok(r.firstBad.stateDiff.some((d) => d.path === 'server.fees'));
     assert.ok(r.firstBad.commandIdx > 0);
@@ -84,7 +84,7 @@ test('fork can override one recorded parameter (counterfactual) and skip a step'
   await withBankPair(async ({ client, shadow }) => {
     const sid = await sloppyRun(client, [100, 33.33]);
     const ev = await client.events(sid);
-    const fill = ev.find((e) => e.type === 'dom.fill' && e.data.params.value === '33.33');
+    const fill = ev.find((e) => e.kind === 'command' && e.type === 'dom.fill' && e.data.params.value === '33.33');
     const r = await client.fork(sid, { shadow: 'shadow', at: fill.idx, override: { [fill.idx]: { value: '10.00' } } });
     assert.equal(r.steps.find((s) => s.parentIdx === fill.idx).overridden, true);
     assert.equal(r.steps.find((s) => s.parentIdx === fill.idx).params.value, '10.00');

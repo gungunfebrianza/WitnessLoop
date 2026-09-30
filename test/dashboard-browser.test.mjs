@@ -32,7 +32,7 @@ test('dashboard renders every view for a real session and treats ledger text as 
     assert.match(fleet, /chains verify/);
 
     // open the bank session and walk every tab
-    await viewer.evaluate(`[...document.querySelectorAll('nav button.s')].find((b) => b.innerText.startsWith('#${r.sid} ')).click()`);
+    await viewer.evaluate(`(async () => { let b; for (let i = 0; i < 150 && !b; i++) { b = [...document.querySelectorAll('nav button.s')].find((x) => x.innerText.startsWith('#${r.sid} ')); if (!b) await new Promise((r) => setTimeout(r, 100)); } b.click(); })()`);
     const walk = async (label, expected) => {
       // the tab row is drawn after the session detail arrives, which can be slow under parallel load: wait for the tab itself
       await viewer.evaluate(`(async () => { let b; for (let i = 0; i < 150 && !b; i++) { await new Promise((r) => setTimeout(r, 100)); b = [...document.querySelectorAll('.tabs button')].find((x) => x.innerText === ${JSON.stringify(label)}); } b.click(); })()`);
@@ -49,7 +49,7 @@ test('dashboard renders every view for a real session and treats ledger text as 
     assert.match(await text('main'), /2 of 4 transfers flagged/i);
     await walk('Timeline', /session timeline/i);
     assert.ok(await viewer.evaluate('document.querySelectorAll("main svg circle").length > 10'), 'timeline draws event markers');
-    assert.match(await text('main') + await viewer.evaluate('document.querySelector("main svg").innerHTML'), /first bad: #19/);
+    assert.match(await text('main') + await viewer.evaluate('document.querySelector("main svg").innerHTML'), /first bad: #23/);
     await walk('Decision funnel', /policy: needs approval/);
     const incident = await walk('Incident', /money not conserved/);
     assert.match(incident, /reviewer-1|policy/);
@@ -86,7 +86,7 @@ for (const [app, tab, title, off, flagged, item] of worldCases) {
       await viewer.navigate(`http://127.0.0.1:${stage.relay.port}/dashboard#token=${stage.relay.token}`);
       const text = async () => viewer.evaluate(`document.querySelector('main')?.innerText ?? ''`);
       for (let i = 0; i < 150 && !/integrity across all sessions/i.test(await text()); i++) await sleep(100);
-      await viewer.evaluate(`[...document.querySelectorAll('nav button.s')].find((b) => b.innerText.startsWith('#1 ')).click()`);
+      await viewer.evaluate(`(async () => { let b; for (let i = 0; i < 150 && !b; i++) { b = [...document.querySelectorAll('nav button.s')].find((x) => x.innerText.startsWith('#1 ')); if (!b) await new Promise((r) => setTimeout(r, 100)); } b.click(); })()`);
       await sleep(500);
       await viewer.evaluate(`[...document.querySelectorAll('.tabs button')].find((b) => b.innerText === ${JSON.stringify(tab)}).click()`);
       const t = await until(text, off);

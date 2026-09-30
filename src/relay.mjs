@@ -150,7 +150,7 @@ export async function createRelay({
 
     // Write-ahead: the begin is on the ledger before the click. If the result cannot be recorded later,
     // verify reports this begin as an unresolved dispatch. If the begin itself cannot be recorded, nothing is dispatched.
-    const begin = effect === 'irreversible' ? ledger.append(sessionId, { kind: 'command.begin', actor, type, effect, data: { params, intent_idx: intentIdx } }) : null;
+    const begin = effect !== 'read' ? ledger.append(sessionId, { kind: 'command.begin', actor, type, effect, data: { params, ...(intentIdx !== null ? { intent_idx: intentIdx } : {}) } }) : null;
     const t0 = Date.now();
     let result;
     let error;

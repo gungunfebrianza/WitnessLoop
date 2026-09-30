@@ -133,8 +133,8 @@ We evaluate with three example applications, each with a scripted, deliberately 
 
 The agent makes payments; the application has a fee-rounding bug that loses a cent on amounts containing cents. Policy lets small payments to known payees through, holds a 300 payment for a human reviewer, and denies 999999 as over the hard limit. Reported results:
 
-- The session ledger verifies (49 events, sealed through event #48).
-- `bisect` identifies event #17, a transfer of 33.33 to `carol`, as the first bad event: money is not conserved (total 174999 against 175000, a loss of one cent), and policy had approved it.
+- The session ledger verifies (65 events, sealed through event #64).
+- `bisect` identifies event #23, a transfer of 33.33 to `carol`, as the first bad event: money is not conserved (total 174999 against 175000, a loss of one cent), and policy had approved it.
 - Forking onto the shadow app under a *patched boundary* (a rule denying amounts with cents) refuses 2 steps. Production total is 174998; the shadow total is 175000, as required, with production untouched.
 - The exported bundle verifies offline, and flipping a single payload byte at event #2 is caught.
 

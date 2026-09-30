@@ -129,13 +129,13 @@ The paper (`paper.md`) is a system-and-position draft. Work needed to reach a su
 
 Implemented and tested (see `docs/THREAT-MODEL.md` for exactly what each does and does not prove):
 
-- **1.1** write-ahead `command.begin` for irreversible dispatches; `verify` reports unresolved dispatches (warning, error under `--strict`); analysis modules tolerate the new kind. Scope: irreversible commands only. Tests: `test/gate-relay.test.mjs`, `test/ledger.test.mjs`.
+- **1.1** write-ahead `command.begin` for every state-changing dispatch (irreversible and, since a later change, reversible); `verify` reports unresolved dispatches (warning, error under `--strict`); analysis modules tolerate the new kind. Scope: irreversible commands only. Tests: `test/gate-relay.test.mjs`, `test/ledger.test.mjs`.
 - **1.2** `anchor`, file sink, pluggable sink function, `verify --anchor` / `verify-bundle --anchor`. Tests: `test/anchor.test.mjs` (a full rewrite resealed with the same key passes plain verify and fails against the anchor). Only meaningful with a sink the key holder cannot rewrite.
 - **1.3** approver keys (`keygen --role approver`), signed approvals over {id, verdict, nonce}, replay protection, `--trusted-approver`, `--allow-unsigned-approvals` (off by default). Tests: `test/approvers.test.mjs`.
 - **1.4** bearer token on every route and the agent WebSocket, token file with restricted permissions (icacls on Windows; `serve` refuses to start if it fails), dashboard token via URL fragment. Tests: `test/auth.test.mjs`.
 - **1.5** `rotate-key`, `revoke-key`, `key.rotate` / `key.revoke` chain events, rotation certs carried in bundles, verification from a pinned key across rotations. Tests: `test/keys.test.mjs`.
 
-Still open: no external anchor service or default sink; the shared token is not a per-person identity; approver keys are files (no hardware or OS keystore); the relay has no `Origin`/`Host` check or TLS; `command.begin` does not cover reversible commands; a corrupt key file is still silently regenerated; the dashboard does not show anchor status; browser-driven tests are timing-sensitive under parallel load and occasionally fail (they also did before Phase 1).
+Still open: no external anchor service or default sink; the shared token is not a per-person identity; approver keys are files (no hardware or OS keystore); the relay has no `Origin`/`Host` check or TLS; a corrupt key file is still silently regenerated; the dashboard does not show anchor status; browser-driven tests are timing-sensitive under parallel load and occasionally fail (they also did before Phase 1).
 
 ## Phase 2 status
 

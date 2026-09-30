@@ -35,7 +35,9 @@ test('reads and reversible writes run un-gated; each write is followed by a chec
     assert.equal(q.ok, true);
     await client.cmd('dom.fill', { selector: '#to', value: 'bob' });
     const ev = await client.events(sid);
-    assert.deepEqual(kinds(ev), ['session.start', 'checkpoint', 'command', 'command', 'checkpoint']);
+    // the read is one event; the write is begin, result, checkpoint
+    assert.deepEqual(kinds(ev), ['session.start', 'checkpoint', 'command', 'command.begin', 'command', 'checkpoint']);
+    assert.equal(ev.find((e) => e.kind === 'command.begin').type, 'dom.fill');
     assert.ok(!kinds(ev).includes('intent'));
     await client.endSession(sid);
   });
@@ -178,7 +180,7 @@ test('write-ahead: a result that cannot be recorded leaves an unresolved dispatc
     await assert.rejects(client.cmd('dom.click', { selector: '#send' }), /disk full/);
     relay.ledger.append = real;
     assert.ok(bank.agent.seen.some((m) => m.type === 'dom.click'), 'the click really reached the page');
-    const begin = relay.ledger.events(sid).find((e) => e.kind === 'command.begin');
+    const begin = relay.ledger.events(sid).find((e) => e.kind === 'command.begin' && e.type === 'dom.click');
     assert.ok(begin, 'the begin was recorded before the click');
     const soft = await client.verify(sid, false);
     assert.equal(soft.ok, true);
@@ -198,11 +200,33 @@ test('write-ahead: if the begin cannot be recorded, nothing is dispatched', asyn
   await withBank(async ({ client, relay, bank }) => {
     await client.startSession({});
     const real = relay.ledger.append.bind(relay.ledger);
-    relay.ledger.append = (id, e) => { if (e.kind === 'command.begin') throw new Error('disk full'); return real(id, e); };
+    relay.ledger.append = (id, e) => { if (e.kind === 'command.begin' && e.type === 'dom.click') throw new Error('disk full'); return real(id, e); };
     await client.cmd('dom.fill', { selector: '#to', value: 'bob' });
     await client.cmd('dom.fill', { selector: '#amount', value: '5' });
     await assert.rejects(client.cmd('dom.click', { selector: '#send' }), /disk full/);
     relay.ledger.append = real;
     assert.ok(!bank.agent.seen.some((m) => m.type === 'dom.click'), 'no click was dispatched');
+  }, { policy: { default: 'allow' } });
+});
+
+test('write-ahead covers reversible writes too: a failed begin dispatches nothing, a lost result is an unresolved dispatch, reads get no begin', async () => {
+  await withBank(async ({ client, relay, bank }) => {
+    const sid = await client.startSession({});
+    const real = relay.ledger.append.bind(relay.ledger);
+    relay.ledger.append = (id, e) => { if (e.kind === 'command.begin' && e.type === 'dom.fill') throw new Error('disk full'); return real(id, e); };
+    await assert.rejects(client.cmd('dom.fill', { selector: '#to', value: 'bob' }), /disk full/);
+    assert.ok(!bank.agent.seen.some((m) => m.type === 'dom.fill'), 'the fill never reached the page');
+    relay.ledger.append = (id, e) => { if (e.kind === 'command' && e.type === 'dom.fill') throw new Error('disk full'); return real(id, e); };
+    await assert.rejects(client.cmd('dom.fill', { selector: '#to', value: 'bob' }), /disk full/);
+    relay.ledger.append = real;
+    assert.ok(bank.agent.seen.some((m) => m.type === 'dom.fill'), 'this one did reach the page');
+    await client.cmd('dom.query', { selector: '#balances' });
+    const ev = relay.ledger.events(sid);
+    assert.equal(ev.filter((e) => e.kind === 'command.begin').length, 1, 'one begin: the failed-begin fill left none, the query has none');
+    const v = await client.verify(sid, false);
+    assert.equal(v.ok, true);
+    assert.equal(v.warnings.length, 1);
+    assert.match(v.warnings[0].reason, /unresolved dispatch/);
+    assert.equal((await client.verify(sid, true)).ok, false);
   }, { policy: { default: 'allow' } });
 });

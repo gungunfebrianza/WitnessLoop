@@ -18,7 +18,7 @@ and shown to follow from recorded causes"). This page says exactly how far that 
 | Only the holder of the relay token can drive the relay | every route and the agent WebSocket require a bearer token; constant-time compare | 401 on missing or wrong token for every route (`test/auth.test.mjs`) |
 | A fork really branched from the recorded past | `fork.start` stores the parent head hash and the restored world hash; `verify` re-checks the anchor | fork anchor mismatch |
 | The proof preceded the consequence | `intent` and `decision` events are appended before dispatch; ledger failure aborts dispatch | event order in the chain; tested with an injected ledger failure |
-| A released irreversible dispatch always leaves a record | a `command.begin` is appended before the click; the result event references it; a begin with no result is an *unresolved dispatch* (warning by default, error under `--strict` and for `verify-bundle`); if the begin cannot be written, nothing is dispatched | injected failure after the click is reported by `verify` (`test/gate-relay.test.mjs`) |
+| A released state-changing dispatch (irreversible or reversible) always leaves a record | a `command.begin` is appended before the click; the result event references it; a begin with no result is an *unresolved dispatch* (warning by default, error under `--strict` and for `verify-bundle`); if the begin cannot be written, nothing is dispatched | injected failure after the click is reported by `verify` (`test/gate-relay.test.mjs`) |
 | A network write a click made under a `reversible` or unannotated label is on the record (after the fact) | the in-page observer reports non-GET `fetch`, XHR, `sendBeacon` and un-intercepted form submits during a click as `observed_effects` (method, origin, path, body hash only); the relay writes a `flag` (`undeclared_effect`) with that evidence and what the page declared | flag written for unannotated and explicit-`reversible` clicks, none for declared `irreversible` or GET-only; nothing but the four fields reaches the ledger (`test/observed.test.mjs`; real page: shop story in `test/e2e-browser.test.mjs`) |
 | A reversible click whose server-side state changed is found again offline (heuristic) | `detect` / the report diff the app-server state (adapter) between the checkpoints around each reversible click | detected; page-only storage changes are not; a click that cannot be checked is listed as skipped, never as clean (`test/detect.test.mjs`) |
 | A policy that can never fire, or a `matches` that can stall the relay, is caught | `policy --dry-run` warns on shadowed rules (only when provable) and on backtracking-prone patterns; `matches` runs under a pattern-size, input-size and time cap and falls back to `require_approval` (or `deny` under a deny-by-default policy) instead of hanging or silently not matching | `test/policy.test.mjs` |
@@ -86,10 +86,11 @@ and shown to follow from recorded causes"). This page says exactly how far that 
    read it. The dashboard page itself is served without the token and carries no data; the token is passed in
    the URL fragment and cleared from the address bar after it is read.
 
-4. **Effects that were dispatched but not recorded.** `command.begin` is written before an irreversible
-   click, so a crash between click and result is *detected* (unresolved dispatch), not prevented: the effect may
-   exist, and the result of it is not on the chain. Read and reversible commands have no write-ahead record and
-   are still appended after dispatch. A begin appended by a compromised relay proves nothing; this is
+4. **Effects that were dispatched but not recorded.** `command.begin` is written before every
+   state-changing command (irreversible and reversible; `dom.click`, `dom.fill`, `page.reload`), so a crash between
+   the dispatch and its result is *detected* (unresolved dispatch), not prevented: the effect may exist, and the
+   result of it is not on the chain. Reads have no write-ahead record (they change nothing) and are appended
+   after dispatch. A begin appended by a compromised relay proves nothing; this is
    evidence for an honest relay that crashed, not against a dishonest one.
 5. **Replay fidelity.** `replay-verify` proves reproducibility *in a shadow copy*, under app-declared
    `volatileKeys`. It does not re-run against production, and cannot reproduce effects that depend on the
